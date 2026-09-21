@@ -254,11 +254,170 @@ def test_end_to_end(tmp):
     check("tracklist has 3+ chapters", len(lines) >= 3, f"{len(lines)}")
 
 
+def test_comfy_workflows():
+    print("\ncomfyui workflows")
+    import json as _json
+    from mpipe.comfy import (apply_settings, collect_outputs, describe_workflow,
+                             find_nodes, load_workflow, set_input, text_field_of)
+
+    for name in ("art", "acestep"):
+        graph = load_workflow(name)
+        check(f"{name}.json loads", len(graph) > 3)
+        check(f"{name}.json is API format",
+              all("class_type" in node for node in graph.values()))
+        # every wired input must point at a node that exists
+        dangling = []
+        for nid, node in graph.items():
+            for field, value in (node.get("inputs") or {}).items():
+                if isinstance(value, list) and len(value) == 2 and value[0] not in graph:
+                    dangling.append(f"{nid}.{field}->{value[0]}")
+        check(f"{name}.json has no dangling links", not dangling, str(dangling))
+        check(f"{name}.json describes cleanly", len(describe_workflow(graph)) == len(graph))
+
+    art = load_workflow("art")
+    applied = apply_settings(art, prompt="P", negative="N", seed=5, steps=9,
+                             width=640, height=360)
+    check("art prompt patched", art["6"]["inputs"]["text"] == "P")
+    check("art negative patched", art["7"]["inputs"]["text"] == "N")
+    check("art seed/steps patched",
+          art["3"]["inputs"]["seed"] == 5 and art["3"]["inputs"]["steps"] == 9)
+    check("art size patched",
+          art["5"]["inputs"]["width"] == 640 and art["5"]["inputs"]["height"] == 360)
+
+    ace = load_workflow("acestep")
+    apply_settings(ace, prompt="TAGS", negative="NEG", lyrics="LYR", seconds=42)
+    pos = next(n for n in ace.values() if (n.get("_meta") or {}).get("title") == "POSITIVE")
+    neg = next(n for n in ace.values() if (n.get("_meta") or {}).get("title") == "NEGATIVE")
+    # the audio encoder's prompt lives in `tags`, not `text` - patching the wrong
+    # field is silent, so assert the right one moved and no bogus key appeared
+    check("ace prompt goes to `tags`", pos["inputs"]["tags"] == "TAGS")
+    check("ace invents no `text` field", "text" not in pos["inputs"])
+    check("ace lyrics only on positive",
+          pos["inputs"]["lyrics"] == "LYR" and neg["inputs"]["lyrics"] != "LYR")
+    check("ace seconds patched", ace["44"]["inputs"]["seconds"] == 42.0)
+
+    graph = load_workflow("art")
+    before = _json.dumps(graph["3"]["inputs"]["model"])
+    set_input(graph, "SAMPLER", "model", "clobbered")
+    check("wired inputs are never overwritten",
+          _json.dumps(graph["3"]["inputs"]["model"]) == before)
+    check("unknown field is not created",
+          set_input(graph, "SAMPLER", "not_a_real_field", 1) == 0
+          and "not_a_real_field" not in graph["3"]["inputs"])
+    check("selector matches by title", find_nodes(graph, "SAMPLER") == ["3"])
+    check("selector matches by class", find_nodes(graph, "KSampler") == ["3"])
+    check("selector matches by id", find_nodes(graph, "3") == ["3"])
+    check("selector is case-insensitive", find_nodes(graph, "sampler") == ["3"])
+    check("text field of audio node is tags",
+          text_field_of({"class_type": "TextEncodeAceStepAudio",
+                         "inputs": {"tags": "", "lyrics": ""}}) == "tags")
+
+    outputs = {"9": {"images": [{"filename": "a.png", "subfolder": "", "type": "output"}]},
+               "59": {"audio": [{"filename": "b.flac", "subfolder": "", "type": "output"}]}}
+    check("collects images", [i["filename"] for i in collect_outputs(outputs, "image")] == ["a.png"])
+    check("collects audio", [i["filename"] for i in collect_outputs(outputs, "audio")] == ["b.flac"])
+    check("collects everything", len(collect_outputs(outputs)) == 2)
+
+
+def test_comfy_roundtrip(tmp):
+    """Drive the mock ComfyUI server exactly as the real one is driven."""
+    print("\ncomfyui round trip")
+    import shutil as _shutil
+    import socket
+    import subprocess
+    import time as _time
+    from mpipe.comfy import ComfyClient, apply_settings, load_workflow
+
+    port = 8199
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+    env_py = sys.executable
+    proc = subprocess.Popen(
+        [env_py, "-c",
+         f"import runpy,sys;sys.argv=['mock'];"
+         f"import importlib.util;"
+         f"spec=importlib.util.spec_from_file_location('m', r'{ROOT}/mock_comfy.py');"
+         f"m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
+         f"from http.server import ThreadingHTTPServer;"
+         f"ThreadingHTTPServer(('127.0.0.1', {port}), m.Handler).serve_forever()"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        client = ComfyClient(f"http://127.0.0.1:{port}")
+        for _ in range(60):
+            if client.health(fatal=False):
+                break
+            _time.sleep(0.25)
+        check("mock server reachable", client.health(fatal=False) is not None)
+        check("checkpoints listed", "v1-5-pruned-emaonly.safetensors" in client.checkpoints())
+
+        graph = load_workflow("art")
+        apply_settings(graph, prompt="test", seed=3, width=128, height=96)
+        paths = client.run(graph, tmp / "art", want="image", timeout=60)
+        check("image downloaded", len(paths) == 1 and paths[0].exists()
+              and paths[0].stat().st_size > 100, str(paths))
+        check("image kept its extension", paths[0].suffix == ".png", paths[0].name)
+
+        graph = load_workflow("acestep")
+        apply_settings(graph, prompt="lofi", seed=3, seconds=3)
+        paths = client.run(graph, tmp / "track", want="audio", timeout=60)
+        check("audio downloaded", len(paths) == 1 and paths[0].exists(), str(paths))
+        import soundfile as sf
+        info = sf.info(str(paths[0]))
+        check("audio is readable", info.frames > 0 and info.channels == 2,
+              f"{info.frames} frames")
+
+        try:
+            client.submit({"1": {"inputs": {}}})
+            check("bad workflow is rejected", False, "no error raised")
+        except RuntimeError as exc:
+            check("bad workflow is rejected", "class_type" in str(exc), str(exc)[:80])
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_video_loop(tmp):
+    print("\nvideo loop")
+    import subprocess
+    from mpipe.util import ffmpeg_ok
+    if not ffmpeg_ok():
+        print("  skip (no ffmpeg)")
+        return
+    from mpipe.video import make_loop
+
+    image = tmp / "src.png"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "testsrc2=size=320x180:duration=1:rate=1",
+                    "-frames:v", "1", str(image)], check=True)
+    width, height, fps, seconds = 320, 180, 24, 3
+    out = make_loop(image, tmp / "loop.mp4", seconds=seconds, size=f"{width}x{height}",
+                    fps=fps, zoom=0.12)
+    check("loop file written", out.exists() and out.stat().st_size > 1000)
+
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+    frame_bytes = width * height * 3
+    count = len(raw) // frame_bytes
+    check("loop has the right frame count", abs(count - seconds * fps) <= 2,
+          f"{count} vs {seconds * fps}")
+    frames = np.frombuffer(raw[:count * frame_bytes], dtype=np.uint8)
+    frames = frames.reshape(count, height, width, 3).astype(np.float32)
+    seam = float(np.abs(frames[0] - frames[-1]).mean())
+    step = float(np.abs(frames[0] - frames[1]).mean())
+    mid = float(np.abs(frames[0] - frames[count // 2]).mean())
+    # the wrap-around must cost no more than a couple of ordinary frame steps,
+    # or the loop visibly jumps every time it repeats
+    check("loop seam is invisible", seam <= max(step * 3.0, 1.0),
+          f"seam {seam:.2f} vs step {step:.2f}")
+    check("loop actually moves", mid > step * 3, f"mid {mid:.2f} vs step {step:.2f}")
+
+
 def test_cli():
     print("\ncli")
     import pipeline
     for args in (["--help"], ["lofi", "-h"], ["song", "-h"], ["all", "-h"],
-                 ["check", "-h"], ["doctor", "-h"]):
+                 ["check", "-h"], ["doctor", "-h"], ["art", "-h"],
+                 ["generate", "-h"]):
         try:
             pipeline.main(args)
         except SystemExit as exc:
@@ -275,6 +434,9 @@ def main():
         test_stretch()
         test_loudness()
         test_fingerprint(tmp)
+        test_comfy_workflows()
+        test_comfy_roundtrip(tmp)
+        test_video_loop(tmp)
         test_end_to_end(tmp)
         test_cli()
     finally:

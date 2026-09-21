@@ -99,6 +99,55 @@ def build_video(audio, out, loop=None, image=None, nvenc=False, reencode=False,
     return out
 
 
+def make_loop(image, out, seconds=40.0, size="1920x1080", fps=30, zoom=0.12,
+              nvenc=False, crf=20, dry_run=False):
+    """Turn a still image into a seamless, slowly-drifting video loop.
+
+    A multi-hour Ken Burns render would take hours to encode.  Instead this
+    makes one short loop whose zoom starts and ends at exactly 1.0 with zero
+    velocity (a raised cosine), so it can be repeated forever with `-c:v copy`
+    and never shows a seam.
+    """
+    ff = find_ffmpeg(required=not dry_run) or "ffmpeg"
+    image = Path(image)
+    if not image.is_file():
+        die(f"image not found: {image}")
+    out = Path(out)
+    try:
+        width, height = (int(v) for v in str(size).lower().split("x"))
+    except ValueError:
+        die(f"--size must look like 1920x1080, got: {size}")
+    frames = max(2, int(round(seconds * fps)))
+
+    # zoompan samples the source at output resolution, so upscale first or the
+    # zoomed-in frames come out soft
+    over = 2.0 + zoom
+    prescale = f"scale={int(width * over)}:{int(height * over)}:flags=lanczos"
+    # raised cosine: z(0) = z(N) = 1 and dz/dn = 0 at both ends -> seamless
+    zexpr = f"1+{zoom}*(0.5-0.5*cos(2*PI*on/{frames}))"
+    pan = (f"x='iw/2-(iw/zoom/2)+{int(width * 0.02)}*sin(2*PI*on/{frames})'"
+           f":y='ih/2-(ih/zoom/2)'")
+    vf = (f"{prescale},zoompan=z='{zexpr}':{pan}:d={frames}:s={width}x{height}:fps={fps},"
+          f"format=yuv420p")
+
+    cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-stats",
+           "-loop", "1", "-i", str(image), "-vf", vf, "-frames:v", str(frames)]
+    if nvenc:
+        cmd += ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr",
+                "-cq", str(crf), "-b:v", "0"]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf)]
+    # a keyframe every second keeps the later -stream_loop remux clean
+    cmd += ["-g", str(fps), "-pix_fmt", "yuv420p", "-an", str(out)]
+
+    log(f"Rendering a {seconds:g}s seamless loop at {width}x{height} -> {out}")
+    if dry_run:
+        log("  " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+        return out
+    subprocess.run(cmd, check=True)
+    return out
+
+
 def tag_audio(src, dest, metadata, bitrate="320k"):
     """Write an MP3/M4A with metadata (title, artist, comment, AI disclosure)."""
     ff = find_ffmpeg()

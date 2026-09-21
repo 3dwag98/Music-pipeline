@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from .acestep import LOW_VRAM_ENV
+from .comfy import LOW_VRAM_FLAGS
 from .util import human_size, log, warn
 
 #: Turing TU116/TU117 (GTX 16-series) have no tensor cores and a well-known
@@ -73,7 +74,27 @@ def system_ram_gb():
         return 0.0
 
 
-def check(write_env=None, verbose=True):
+def probe_comfy(url="http://127.0.0.1:8188", timeout=4):
+    """Is a ComfyUI server up?  Returns a short description or None."""
+    try:
+        import requests
+    except ImportError:
+        return None
+    try:
+        stats = requests.get(f"{url.rstrip('/')}/system_stats", timeout=timeout).json()
+    except Exception:
+        return None
+    devices = stats.get("devices") or []
+    version = (stats.get("system") or {}).get("comfyui_version", "?")
+    if devices:
+        dev = devices[0]
+        return (f"ComfyUI {version} on {dev.get('name', 'device')} "
+                f"({dev.get('vram_free', 0) / 1e9:.1f}/"
+                f"{dev.get('vram_total', 0) / 1e9:.1f} GB VRAM free)")
+    return f"ComfyUI {version}"
+
+
+def check(write_env=None, verbose=True, comfy_url="http://127.0.0.1:8188"):
     """Run every check.  Returns (report dict, list of problems)."""
     report, problems, notes = {}, [], []
 
@@ -121,6 +142,8 @@ def check(write_env=None, verbose=True):
         if any(tag in gpu["name"] for tag in FP16_PROBLEM_CARDS):
             notes.append(f"{gpu['name']}: GTX 16-series cards produce silence or noise in "
                          "half precision. The written config forces float32 - slower, but correct.")
+            notes.append("  The same applies to ComfyUI: start it with "
+                         f"{' '.join(LOW_VRAM_FLAGS)}")
             tuned["ACESTEP_TORCH_DTYPE"] = "float32"
         if gpu["vram_mb"] <= 6300:
             notes.append(f"{gpu['vram_mb']} MB VRAM: keep --count batches small, "
@@ -131,6 +154,16 @@ def check(write_env=None, verbose=True):
     else:
         notes.append("No NVIDIA GPU detected. The built-in engine ('pipeline.py lofi') "
                      "runs entirely on the CPU and does not need one.")
+
+    comfy = probe_comfy(comfy_url)
+    report["comfyui"] = comfy or "not running"
+    if comfy:
+        notes.append(f"{comfy} - `pipeline.py art` and `generate --backend comfy` "
+                     "can use it.")
+    else:
+        notes.append("ComfyUI not running (optional). It makes the cover art and the "
+                     "video loop, and can host ACE-Step. Start it with: "
+                     f"python main.py {' '.join(LOW_VRAM_FLAGS)}")
 
     try:
         free = shutil.disk_usage(str(Path.cwd())).free
@@ -161,6 +194,7 @@ def check(write_env=None, verbose=True):
         for key in ("platform", "python", "ram_gb", "disk_free", "ffmpeg"):
             if key in report:
                 log(f"  {key:<14} {report[key]}")
+        log(f"\nComfyUI       {report['comfyui']}")
         log("\nGPU")
         if gpus:
             for gpu in gpus:

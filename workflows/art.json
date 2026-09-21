@@ -1,0 +1,48 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "_meta": {"title": "SAMPLER"},
+    "inputs": {
+      "seed": 0, "steps": 24, "cfg": 7.0,
+      "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 1.0,
+      "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "CHECKPOINT"},
+    "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "_meta": {"title": "LATENT"},
+    "inputs": {"width": 832, "height": 480, "batch_size": 1}
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "POSITIVE"},
+    "inputs": {
+      "text": "cozy lofi study room at night, warm desk lamp, rain on the window, plants, bookshelf, soft anime illustration, muted colours, grain",
+      "clip": ["4", 1]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "NEGATIVE"},
+    "inputs": {
+      "text": "text, watermark, signature, logo, letters, people staring at camera, extra limbs, deformed, oversaturated, harsh contrast",
+      "clip": ["4", 1]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {"title": "DECODE"},
+    "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "_meta": {"title": "SAVE"},
+    "inputs": {"filename_prefix": "lofi_art", "images": ["8", 0]}
+  }
+}

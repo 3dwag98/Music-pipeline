@@ -5,7 +5,7 @@ Everything runs on your own PC. Nothing is uploaded, nothing is streamed, no API
 ```
                  ┌─ lofi      built-in engine, CPU only, no model, no download
   generate ──────┤
-                 └─ generate  ACE-Step 1.5 over its local REST API (optional, GPU)
+                 └─ generate  ACE-Step 1.5, via its own API or via ComfyUI (GPU)
                         │
                         ▼
                   master      trim · −14 LUFS · −1 dBTP
@@ -19,6 +19,8 @@ Everything runs on your own PC. Nothing is uploaded, nothing is streamed, no API
       └────────────────┬──────────────────┘
                        ▼
               video  →  check  →  upload
+                ▲
+                └─ art   ComfyUI makes the picture and a seamless loop (optional)
 ```
 
 Built for a **Windows laptop, 16 GB RAM, GTX 1660 Ti (6 GB)**, but the built-in
@@ -197,7 +199,74 @@ state instead of needing the whole timeline.
 
 ---
 
-## 5. Before you upload — `check`
+## 5. ComfyUI (optional) — the picture, and another way to run ACE-Step
+
+If you already have ComfyUI, the pipeline can drive it. Two uses:
+
+### The visual — `art`
+
+This closes the last manual gap: until now you had to supply your own
+`--loop my_loop.mp4`. Now:
+
+```bat
+python pipeline.py art --prompt "cozy attic at night, rain on the window, warm lamp"
+python pipeline.py video --loop runs\<newest>\loop.mp4
+```
+
+`art` generates the image in ComfyUI, then builds a **seamless video loop** from
+it — a slow drift whose zoom starts and ends at exactly 1.0 with zero velocity
+(a raised cosine), so it repeats forever with no visible jump. That matters
+because it means the final video is a **remux, not an encode**: a 3-hour upload
+is assembled with `-c:v copy` in a couple of minutes instead of re-encoding
+three hours of frames.
+
+Measured on the wrap-around frame: the seam costs 1.3× an ordinary frame step,
+while the midpoint differs by 24× — real motion, invisible loop point.
+
+```bat
+python pipeline.py art --count 4                      :: pick your favourite
+python pipeline.py art --loop-seconds 60 --zoom 0.18   :: longer, stronger drift
+python pipeline.py art --loop-seconds 0                :: still image only
+python pipeline.py art --nvenc                         :: GPU-encode the loop
+```
+
+### ACE-Step through ComfyUI — `generate --backend comfy`
+
+```bat
+python pipeline.py generate --backend comfy --genre lofi --count 10
+```
+
+Worth doing on a 6 GB card: ComfyUI's memory management is better than the
+standalone ACE-Step server's, and it supports ACE-Step natively. Start it with
+the flags in §6.
+
+### Using your own workflows
+
+The shipped `workflows/art.json` and `workflows/acestep.json` are starting
+points. Node names and checkpoint filenames differ between installs, so the
+reliable path is to build what you want **in ComfyUI**, confirm it runs, then
+**Workflow → Export (API)** and point at it:
+
+```bat
+python pipeline.py art --workflow my_export.json --show-workflow   :: see what you can patch
+python pipeline.py art --workflow my_export.json --set SAMPLER.cfg=6.5
+```
+
+Values are matched by node title first (`POSITIVE`, `NEGATIVE`), then class
+type, then any node that already has that input. Inputs wired to another node
+are never overwritten, and a field a node doesn't have is refused rather than
+silently ignored — patching ACE-Step's prompt into `text` instead of `tags`
+looks like it worked and does nothing, so the pipeline checks.
+
+If the workflow names a checkpoint ComfyUI can't see, you get the list of what
+it *can* see instead of a bare error.
+
+No ComfyUI installed? `python mock_comfy.py` fakes it well enough to rehearse
+the whole flow.
+
+---
+
+## 6. Before you upload — `check`
 
 ```bat
 python pipeline.py check --log
@@ -259,7 +328,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 6. GTX 1660 Ti / 6 GB notes
+## 7. GTX 1660 Ti / 6 GB notes
 
 - **Half precision is broken on GTX 16-series cards.** Turing TU116/TU117 have no
   tensor cores and a well-known fp16 path that yields NaNs — in practice, silence
@@ -270,6 +339,15 @@ near-identical uploads are judged on their own terms regardless of who owns them
   to pass next time.
 - **Don't run `video --nvenc` while ACE-Step is generating** — they share the GPU.
 - The built-in engine uses no VRAM at all, so `lofi` and ACE-Step can run together.
+- **ComfyUI** needs the same treatment — start it with:
+
+  ```bat
+  python main.py --lowvram --force-fp32 --fp32-vae --use-split-cross-attention
+  ```
+
+  `--force-fp32` is the same story as ACE-Step: on a 16-series card fp16 gives
+  you black images and silent audio, not speed. `doctor` prints this line for
+  you and tells you whether ComfyUI is currently running.
 - **16 GB RAM:** everything long-form streams; a 6-hour render stays in the low
   hundreds of MB. Close browser tabs playing video before long jobs.
 - `pip install numba` is optional and makes the mastering chain roughly twice as
@@ -277,13 +355,14 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 7. Command reference
+## 8. Command reference
 
 | Command | Purpose |
 |---|---|
 | `doctor` | check this PC; `--write-env` writes tuned ACE-Step settings |
 | `lofi` | generate tracks with the built-in engine (no GPU) |
-| `generate` | generate tracks with ACE-Step |
+| `generate` | generate tracks with ACE-Step (`--backend comfy` to route via ComfyUI) |
+| `art` | generate cover art in ComfyUI + a seamless video loop |
 | `master` | trim, loudness-normalise and limit each track |
 | `song` | beat-match tracks into one continuous song |
 | `mix` | crossfaded compilation + chapters |
@@ -298,7 +377,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -310,3 +389,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 | A track ignored the target tempo | it was outside `--max-stretch`; raise it or set `--bpm` closer |
 | Mix is muddy | lower `--spine`, or raise `--tone-match` toward 1.0 |
 | Out of disk mid-render | 24-bit WAV is ~1.1 GB/hour; `song` warns up front |
+| ComfyUI: black images / silent audio | fp16 on a 16-series card — restart it with `--force-fp32 --fp32-vae` |
+| ComfyUI: "has no checkpoint called ..." | the workflow names a model you don't have; the error lists what you do have — pick one with `--set CHECKPOINT.ckpt_name=<name>` |
+| ComfyUI: "not an API workflow" | use **Workflow → Export (API)**, not plain Save |
+| "every track is shorter than a N-bar transition" | lower `--crossfade-bars`, or generate longer tracks |
