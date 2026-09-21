@@ -3,12 +3,12 @@
 Everything runs on your own PC. Nothing is uploaded, nothing is streamed, no API keys.
 
 ```
-                 ┌─ lofi      built-in engine, CPU only, no model, no download
-  generate ──────┤
-                 └─ generate  ACE-Step 1.5, via its own API or via ComfyUI (GPU)
+   ┌─ lofi      built-in engine · CPU only · no model · no download
+   ├─ lofify    YOUR existing songs → lofi versions of them
+   └─ generate  ACE-Step 1.5 · its own API, or ComfyUI (GPU)
                         │
                         ▼
-                  master      trim · −14 LUFS · −1 dBTP
+                  master      trim · −14 LUFS · −1 dBTP true peak
                         │
                         ▼
       ┌──────── song ───┴─── mix ────────┐
@@ -21,6 +21,8 @@ Everything runs on your own PC. Nothing is uploaded, nothing is streamed, no API
               video  →  check  →  upload
                 ▲
                 └─ art   ComfyUI makes the picture and a seamless loop (optional)
+
+  Everything comes out as tagged MP3 by default.
 ```
 
 Built for a **Windows laptop, 16 GB RAM, GTX 1660 Ti (6 GB)**, but the built-in
@@ -31,8 +33,9 @@ engine needs no GPU at all and runs anywhere Python does.
 ## 1. Install (Windows, ~5 minutes)
 
 1. Install **Python 3.11** from python.org — tick *Add python.exe to PATH*.
-2. Optional but recommended: **ffmpeg** — `winget install Gyan.FFmpeg`, then open a
-   **new** terminal. (Only needed for MP3 and video; WAV/FLAC work without it.)
+2. Optional: **ffmpeg** — `winget install Gyan.FFmpeg`, then open a **new**
+   terminal. Only the `video` step needs it now; MP3 is written by `pedalboard`
+   (LAME) directly.
 3. In this folder, double-click `setup_windows.bat` — or do it by hand:
 
    ```bat
@@ -69,25 +72,34 @@ python pipeline.py lofi --count 20 --minutes 3      :: 20 tracks, 3 min each
 python pipeline.py dedupe                           :: flag near-identical ones
                                                     :: then delete what you dislike
 python pipeline.py song --hours 2 --spine 0.5       :: one 2-hour song
-python pipeline.py video --loop my_loop.mp4 --nvenc :: put it under a video
+python pipeline.py art  --prompt "rainy window"     :: artwork + a seamless loop
+python pipeline.py video --loop runs\<newest>\loop.mp4
 python pipeline.py check --log                      :: before you upload
+```
+
+Or start from music you already have:
+
+```bat
+python pipeline.py lofify "C:\my songs" --preset study --drums add --i-own-this
+python pipeline.py song --hours 1
 ```
 
 Every run gets its own folder under `runs\`:
 
 | File | What it is |
 |---|---|
-| `raw\` | the generated tracks |
+| `raw\` | the generated (or lofi-ed) tracks, as tagged MP3 |
 | `mastered\` | trimmed, −14 LUFS, safe peaks (ACE-Step path) |
+| `art\` | ComfyUI artwork, if you ran `art` |
 | `manifest.json` | every setting, seed, chord and instrument used |
-| `song.wav` | the single continuous song |
+| `song.mp3` | the single continuous song |
 | `song_tracklist.txt` | chapter timestamps for the description |
 | `song_report.json` | tempo, key, per-track stretch/pitch decisions |
 | `song.mp4` | final upload |
 
 ---
 
-## 3. The two generators
+## 3. The three generators
 
 ### `lofi` — the built-in engine (default)
 
@@ -132,6 +144,68 @@ caption LLM, CPU offload, float32) and backs up any existing `.env` first.
 
 No GPU handy? `python mock_server.py` in a second terminal fakes the API so you
 can rehearse the whole flow.
+
+### `lofify` — songs you already have
+
+Takes finished music and rebuilds it as lofi. The moves, in the order they
+belong:
+
+1. work out the tempo, key and downbeat,
+2. deal with the vocal — proper separation if `demucs` is installed, the
+   centre-channel trick if not,
+3. slow it down, pitch dropping with it like a tape running slow,
+4. run the colour chain (lowpass, wobble, bit reduction, room),
+5. optionally lay a boom-bap kit under it, **beat-locked to the new tempo**,
+6. sit it on a continuous vinyl bed,
+7. master to −14 LUFS with a true-peak ceiling.
+
+```bat
+python pipeline.py lofify "C:\my songs" --i-own-this
+python pipeline.py lofify track.mp3 --preset sleep --i-own-this
+python pipeline.py lofify *.flac --preset study --drums add --i-own-this
+```
+
+**Presets** (each is just a bundle of the flags below):
+
+| Preset | Speed | Vocals | Character |
+|---|---|---|---|
+| `classic` | 0.88 | reduced | the familiar one |
+| `slowed` | 0.82 | kept | "slowed + reverb" |
+| `study` | 0.90 | removed | + a lazy kit under it |
+| `sleep` | 0.78 | removed | very dark, 4.2 kHz lowpass |
+| `tape` | 0.92 | reduced | heavy wobble, 10-bit, a little GSM grit |
+| `instrumental` | 1.00 | removed | same tempo, just the backing |
+
+Anything is overridable: `--speed 0.85`, `--keep-pitch` (slow without dropping
+pitch), `--vocals {keep,reduce,remove}`, `--vocal-amount 0.6`, `--drums add`,
+`--drum-pattern shuffle`, `--amount 0.7`, `--lowpass 5000`, `--bitcrush 10`,
+`--vinyl 1.2`, `--reverb 0.5`, `--telephone 0.3`, `--mp3-artifacts 0.4`.
+
+Output feeds straight into `song`, so you can turn an album into one continuous
+hour.
+
+#### Vocal removal: what you actually get
+
+Without `demucs`, vocals are removed with the **centre-channel trick** —
+subtracting what is identical in both speakers. It is free, instant, and on the
+test material it pulled a dead-centre vocal down by **54–68 dB**. But it only
+works on vocals mixed dead centre, and it thins anything else that is centred
+(the low end is put back untouched to protect the kick and bass).
+
+With `pip install demucs` it uses real source separation instead, which handles
+vocals that are not centred and does not touch the rest of the mix. It pulls in
+torch and a few hundred MB of weights, and wants ~3 GB of VRAM — fine on your
+card, but slow on CPU. The pipeline detects it automatically and tells you which
+one it used.
+
+#### Rights
+
+`lofify` refuses to run without `--i-own-this`. A lofi remix of someone else's
+record is still their record — and Content ID matches *edited* audio, so slowing
+it down and adding crackle changes nothing legally or technically. Use it on
+your own music, music licensed to you, or public domain. `check` records which
+files a run was built from, and says plainly that nothing here can verify the
+claim.
 
 ---
 
@@ -266,7 +340,68 @@ the whole flow.
 
 ---
 
-## 6. Before you upload — `check`
+## 6. Output format, and the libraries doing the work
+
+### Everything is MP3
+
+MP3 is the default for every file the pipeline writes. A 3-hour 24-bit WAV is
+**3.2 GB**; the same thing at 320 kbps is **430 MB**, which matters on a laptop.
+It is written by `pedalboard` (LAME) **block by block**, so an hours-long MP3 is
+never staged through a giant WAV first.
+
+```bat
+python pipeline.py lofi --count 8                    :: MP3, 320 kbps
+python pipeline.py song --hours 2 --mp3-quality V0   :: VBR instead
+python pipeline.py song --hours 2 --format wav       :: lossless, if you prefer
+```
+
+`--format {mp3,wav,flac}` and `--mp3-quality {320,256,192,V0,V2}` work on every
+command that writes audio.
+
+**One honest caveat.** Generating to MP3 and then building a `song` from those
+MP3s means two encode generations. At 320 kbps that is inaudible for this
+material, but if you intend to master elsewhere, generate with `--format wav`
+and only encode at the end.
+
+Every file gets **ID3 tags** (title, artist, album, track, BPM, key, genre, and
+the AI-disclosure note), and the final song embeds your ComfyUI artwork as cover
+art if you ran `art`. `--no-tags` turns that off; `--artist` / `--album` /
+`--title` set the fields.
+
+### What each library is for
+
+| Library | Why it is here | Required? |
+|---|---|---|
+| `numpy`, `scipy` | the engine, the DSP, the analysis | yes |
+| `soundfile` | WAV/FLAC I/O | yes |
+| `pyloudnorm` | BS.1770 loudness measurement | yes |
+| **`pedalboard`** | MP3 I/O (no ffmpeg), Rubber Band stretch/pitch, the effect chain, true-peak brickwall | **strongly recommended** |
+| `mutagen` | ID3 tags and embedded cover art | recommended |
+| `requests` | the ACE-Step and ComfyUI backends | for those only |
+| `demucs` | real stem separation for `lofify --vocals remove` | optional |
+| `numba` | compiles the envelope followers, ~2× faster mastering | optional |
+| `librosa` | a second opinion on tempo/key | optional |
+
+`pedalboard` is the one that earns its place twice over. It gives MP3 without
+ffmpeg, and its Rubber Band time-stretch measured **0.0 cents** of pitch error
+against ±0.6 cents for the built-in one — which matters because `song` pitch-
+shifts every track to a common key. Everything still works without it: the
+pipeline falls back to its own numpy DSP and tells you which backend it used.
+
+### True-peak limiting
+
+Worth knowing, because it is the difference between compliant and clipping.
+A limiter that only looks at *samples* and stops at −1.0 dBFS can still
+reconstruct at **+2.25 dBTP** on dense material — and that overshoot clips in
+any lossy encode, which is exactly what MP3 is. The limiter's detector therefore
+runs on a 4× oversampled copy, so it accounts for what the waveform does
+*between* samples.
+
+Measured after encoding to MP3 and decoding back: **−1.0 dBTP**, on the nose.
+
+---
+
+## 7. Before you upload — `check`
 
 ```bat
 python pipeline.py check --log
@@ -312,6 +447,11 @@ What this pipeline actually does is remove the real causes:
 - The built-in engine synthesises **every sound from scratch** — no sample packs,
   no loops, no scraped audio. There is no third-party recording in the output to
   match against.
+- `lofify` is the exception, and it is gated: it rebuilds audio *you* supply, so
+  it refuses to run without `--i-own-this`, and `check` names the source files
+  in its report. Slowing a record down and adding crackle does not make it
+  yours — Content ID matches edited audio, and the edit is a derivative work
+  either way.
 - `--ref-mode cover` (which rebuilds an existing recording) is **blocked** unless
   you pass `--i-own-this`. Covering someone else's record is the single most
   reliable way to get claimed, and it is a copyright question, not a detection one.
@@ -328,7 +468,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 7. GTX 1660 Ti / 6 GB notes
+## 8. GTX 1660 Ti / 6 GB notes
 
 - **Half precision is broken on GTX 16-series cards.** Turing TU116/TU117 have no
   tensor cores and a well-known fp16 path that yields NaNs — in practice, silence
@@ -355,12 +495,13 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 8. Command reference
+## 9. Command reference
 
 | Command | Purpose |
 |---|---|
 | `doctor` | check this PC; `--write-env` writes tuned ACE-Step settings |
 | `lofi` | generate tracks with the built-in engine (no GPU) |
+| `lofify` | turn songs you already have into lofi (needs `--i-own-this`) |
 | `generate` | generate tracks with ACE-Step (`--backend comfy` to route via ComfyUI) |
 | `art` | generate cover art in ComfyUI + a seamless video loop |
 | `master` | trim, loudness-normalise and limit each track |
@@ -373,11 +514,14 @@ near-identical uploads are judged on their own terms regardless of who owns them
 | `ledger` | list everything you have exported |
 | `all` | generate → song → video in one go |
 
+Shared on every command that writes audio: `--format {mp3,wav,flac}`,
+`--mp3-quality`, `--artist`, `--album`, `--title`, `--no-tags`.
+
 `python pipeline.py <command> -h` shows every option.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -393,3 +537,8 @@ near-identical uploads are judged on their own terms regardless of who owns them
 | ComfyUI: "has no checkpoint called ..." | the workflow names a model you don't have; the error lists what you do have — pick one with `--set CHECKPOINT.ckpt_name=<name>` |
 | ComfyUI: "not an API workflow" | use **Workflow → Export (API)**, not plain Save |
 | "every track is shorter than a N-bar transition" | lower `--crossfade-bars`, or generate longer tracks |
+| `lofify` refuses to start | it needs `--i-own-this` — see the rights note in §3 |
+| Vocals still audible after `--vocals remove` | they are not mixed dead centre; `pip install demucs` for real separation |
+| "writing MP3 needs pedalboard" | `pip install pedalboard`, or use `--format wav` |
+| Tags missing from the MP3s | `pip install mutagen` |
+| Lofi version sounds too muddy | lower `--amount`, or raise `--lowpass` |

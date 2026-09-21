@@ -1,15 +1,24 @@
-# Core - everything the built-in engine, mastering, song builder and checks need.
+# Core - the built-in engine, mastering, the song builder and the checks.
 numpy>=1.24
 scipy>=1.10
 soundfile>=0.12
 pyloudnorm>=0.1.1
 
-# Only for the ACE-Step backend ("pipeline.py generate").
+# MP3 in and out (LAME), Rubber Band time-stretch/pitch-shift, and the
+# effect chain.  Without it the pipeline still runs on its own numpy DSP,
+# but it cannot write MP3 and the stretching is lower quality.
+pedalboard>=0.9
+
+# ID3 tags and embedded cover art on the MP3s.
+mutagen>=1.45
+
+# Only for the ACE-Step / ComfyUI backends ("generate", "art").
 requests>=2.28
 
 # Optional extras:
+#   demucs      proper stem separation, so "lofify --vocals remove" is clean
+#               instead of using the centre-channel trick (pulls in torch)
 #   numba       compiles the envelope followers - mastering roughly 2x faster
 #   librosa     a second opinion on tempo/key in "analyze"
-#   transformers, torch   only for "analyze --clap" mood tags (large download)
+# pip install demucs
 # pip install numba
-# pip install librosa

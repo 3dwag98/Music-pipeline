@@ -26,7 +26,8 @@ call ".venv\Scripts\python.exe" pipeline.py doctor
 
 echo.
 echo Setup finished.
-echo   make_lofi.bat          makes a one-hour song
+echo   make_lofi.bat          generates a one-hour lofi song
+echo   make_lofify.bat        turns songs you own into lofi
 echo   .venv\Scripts\activate then use pipeline.py directly
 pause
 exit /b 0

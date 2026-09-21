@@ -235,9 +235,12 @@ class Compressor:
 class Limiter:
     """Look-ahead brickwall limiter that keeps peaks under `ceiling_db`."""
 
-    def __init__(self, sr, ceiling_db=-1.0, lookahead_ms=5.0, release_ms=120.0, decim=None):
+    def __init__(self, sr, ceiling_db=-1.0, lookahead_ms=5.0, release_ms=120.0,
+                 decim=None, true_peak=True, oversample=4):
         self.sr = sr
         self.ceiling = 10 ** (ceiling_db / 20.0)
+        self.true_peak = bool(true_peak)
+        self.oversample = int(oversample) if true_peak else 1
         self.look = max(1, int(lookahead_ms * 0.001 * sr))
         self.decim = int(decim or CONTROL_DECIM)
         ctrl_sr = sr / self.decim
@@ -255,7 +258,7 @@ class Limiter:
         if len(x) == 0:
             return x[:, 0] if squeeze else x
         buf = np.concatenate([self._delay, x], axis=0)
-        peak = np.abs(buf).max(axis=1).astype(np.float64)
+        peak = self._detect(buf)
         # a peak `look` samples ahead must already start pulling the gain down
         ahead = np.concatenate([peak[self.look:], np.zeros(self.look)])
         peak = np.maximum(peak, ahead)
@@ -268,6 +271,26 @@ class Limiter:
         y = np.ascontiguousarray(out[: len(x)])
         np.clip(y, -self.ceiling, self.ceiling, out=y)
         return y[:, 0] if squeeze else y
+
+    def _detect(self, buf):
+        """Per-sample peak used to compute gain.
+
+        In true-peak mode the detector runs on a 4x-oversampled copy, so the
+        gain accounts for what the waveform does BETWEEN samples.  A plain
+        sample-domain limiter set to -1.0 dBFS can still reconstruct at over
+        +2 dBTP on dense material, which then clips in any lossy encode - this
+        is what stops that.  The gain is still applied at base rate, which is
+        standard practice and keeps the cost to one polyphase resample.
+        """
+        if not self.true_peak or self.oversample <= 1:
+            return np.abs(buf).max(axis=1).astype(np.float64)
+        from scipy.signal import resample_poly
+        up = resample_poly(buf, self.oversample, 1, axis=0)
+        mono = np.abs(up).max(axis=1)
+        need = len(buf) * self.oversample
+        if len(mono) < need:
+            mono = np.concatenate([mono, np.repeat(mono[-1:], need - len(mono))])
+        return mono[:need].reshape(len(buf), self.oversample).max(axis=1).astype(np.float64)
 
     def flush(self):
         tail = np.clip(self._delay * self._gain, -self.ceiling, self.ceiling)

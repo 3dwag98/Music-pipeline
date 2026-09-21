@@ -21,6 +21,7 @@ import numpy as np
 from . import dsp
 from .audio import StreamWriter, StreamingLoudness, integrated_lufs, load_audio
 from .drums import PATTERNS, DrumKit
+from . import effects
 from .stretch import (analyze_file, fit_to_tempo, key_distance, pitch_shift,
                       semitones_to_key, time_stretch)
 from .theory import parse_key, key_name
@@ -238,7 +239,7 @@ class MasterBus:
         self.glue = dsp.Compressor(sr, threshold_db=-14.0, ratio=1.8, attack_ms=30.0,
                                    release_ms=280.0, knee_db=9.0)
         self.limiter = dsp.Limiter(sr, ceiling_db=ceiling_db, lookahead_ms=6.0,
-                                   release_ms=150.0)
+                                   release_ms=150.0, true_peak=True)
         self.tape = tape
 
     def process(self, x):
@@ -275,7 +276,9 @@ def prepare_track(info, sr, target_bpm, target_key, lufs=-15.0, tone_target=None
     if target_key and info.get("key"):
         shift = semitones_to_key(info["key"], target_key, max_shift=max_shift)
         if shift:
-            x = pitch_shift(x, shift, sr)
+            # effects.time_pitch prefers pedalboard (Rubber Band) and falls back
+            # to the built-in shifter, so quality improves where it is installed
+            x = effects.time_pitch(x, sr, stretch=1.0, semitones=shift)
     notes["pitch_semitones"] = shift
 
     measured = integrated_lufs(x, sr)
@@ -336,7 +339,7 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
                tape=0.7, width=1.25, lufs=-14.0, peak_db=-1.0, tone_strength=0.7,
                lofi=0.0, max_stretch=18.0, max_shift=4, fade_out=12.0,
                cache_path=None, titles=None, progress=True, spine_style="dusty",
-               spine_pattern="lazy"):
+               spine_pattern="lazy", mp3_quality=320):
     """Build ONE continuous song from many tracks.  Streams; returns a report."""
     paths = [Path(p) for p in paths]
     if not paths:
@@ -386,7 +389,8 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
                    spine_style=spine_style, spine_pattern=spine_pattern)
     bus = MasterBus(sr, tape=tape, width=width, ceiling_db=peak_db)
     meter = StreamingLoudness(sr)
-    writer = StreamWriter(out_path, sr=sr, channels=2, subtype="PCM_24")
+    writer = StreamWriter(out_path, sr=sr, channels=2, subtype="PCM_24",
+                          mp3_quality=mp3_quality)
 
     chapters, used, prev_tail, idx, repeats = [], [], None, 0, 0
     seen_titles = {}
@@ -509,7 +513,7 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
 
 def build_mix(paths, out_path, minutes=0.0, sr=DEFAULT_SR, crossfade=5.0,
               final_fade=8.0, shuffle=False, seed=0, titles=None, progress=True,
-              peak_db=-1.0):
+              peak_db=-1.0, mp3_quality=320):
     """The classic compilation: tracks back to back with equal-power crossfades."""
     paths = [Path(p) for p in paths]
     if not paths:
@@ -526,9 +530,11 @@ def build_mix(paths, out_path, minutes=0.0, sr=DEFAULT_SR, crossfade=5.0,
     if target_n:
         check_disk(Path(out_path).parent, int(target_n * 2 * 3 * 1.1), "the mix")
 
-    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=5.0, release_ms=130.0)
+    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=5.0, release_ms=130.0,
+                          true_peak=True)
     meter = StreamingLoudness(sr)
-    writer = StreamWriter(out_path, sr=sr, channels=2, subtype="PCM_24")
+    writer = StreamWriter(out_path, sr=sr, channels=2, subtype="PCM_24",
+                          mp3_quality=mp3_quality)
     chapters, prev_tail, i, repeated = [], None, 0, False
 
     def emit(block):
