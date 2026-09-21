@@ -1000,6 +1000,21 @@ def cmd_dedupe(args):
     return None
 
 
+def cmd_models(args):
+    """What can generate the music, and what the licence lets you do with it."""
+    from mpipe.models import report
+
+    vram = args.vram
+    if vram is None:
+        from mpipe.doctor import nvidia_smi
+        gpus = nvidia_smi()
+        if gpus:
+            vram = gpus[0]["vram_mb"] / 1024.0
+            log(f"Detected {gpus[0]['name']} with {vram:.1f} GB of VRAM\n")
+    report(vram_gb=vram, commercial_only=args.commercial_only)
+    return None
+
+
 def cmd_ledger(args):
     from mpipe.fingerprint import Ledger
     ledger = Ledger(args.ledger or LEDGER_PATH)
@@ -1393,6 +1408,13 @@ def main(argv=None):
     p.add_argument("--threshold", type=float, default=0.35)
     p.add_argument("-q", "--quiet", action="store_true")
     p.set_defaults(func=cmd_dedupe)
+
+    p = sub.add_parser("models", help="which generation models fit, and their licences")
+    p.add_argument("--vram", type=float, help="VRAM in GB (default: detect)")
+    p.add_argument("--commercial-only", action="store_true",
+                   help="hide models whose weights forbid commercial use")
+    p.add_argument("-q", "--quiet", action="store_true")
+    p.set_defaults(func=cmd_models)
 
     p = sub.add_parser("ledger", help="list everything you have exported")
     p.add_argument("--ledger")

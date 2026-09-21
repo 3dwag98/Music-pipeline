@@ -129,6 +129,10 @@ Useful knobs: `--bpm`, `--key "A Minor"`, `--swing 0.25`, `--vinyl 0`,
 
 ### `generate` — ACE-Step 1.5 (optional)
 
+> Which model should you use? `python pipeline.py models` prints the options
+> with their **licences** and VRAM, marked up for your card. Read it before you
+> pick one — see §6.
+
 For a neural generator's sound. Needs the ACE-Step Windows portable package
 running its API server on `127.0.0.1:8001`.
 
@@ -340,7 +344,55 @@ the whole flow.
 
 ---
 
-## 6. Output format, and the libraries doing the work
+## 6. Which generation model
+
+```bat
+python pipeline.py models                    :: detects your VRAM
+python pipeline.py models --commercial-only  :: hide what you cannot monetise
+```
+
+The pipeline is **model-agnostic**. `generate` drives ACE-Step over its REST
+API, `generate --backend comfy` drives any API-format ComfyUI workflow, and the
+built-in engine needs no model at all. So adding a model is usually **adding a
+workflow file, not writing code**: build it in ComfyUI, *Workflow → Export
+(API)*, then `generate --backend comfy --workflow yours.json`.
+
+What is *not* interchangeable is the licence.
+
+| Model | Licence | Commercial? | VRAM | Length |
+|---|---|---|---|---|
+| **ACE-Step 1.5** | Apache 2.0 | **yes** | 8 GB (less with offload) | full songs |
+| **DiffRhythm 2** | Apache 2.0 | **yes** | ~8 GB | full songs |
+| MusicGen (all sizes) | code MIT, **weights CC-BY-NC** | **no** | 4 GB | ~30 s |
+| Stable Audio Open 1.0 | Stability Community | conditional | ~8 GB | 47 s |
+| Stable Audio Open Small | Stability Community | conditional | ~4 GB | 11 s |
+| YuE 7B | see repo | check | 24 GB+ | full songs |
+| **this pipeline's engine** | this repo | **yes** | none | unlimited |
+
+**The trap worth knowing about.** MusicGen fits a 6 GB card easily, sounds good,
+and its *code* is MIT — but its **weights are CC-BY-NC 4.0**, which forbids
+commercial use. A monetised YouTube channel is commercial use. The code licence
+does not carry over to the weights. `models --commercial-only` hides it.
+
+**For your setup, ACE-Step is already the right answer** and is already wired in
+two ways: Apache 2.0 covers the weights as well as the code, and `doctor
+--write-env` configures the CPU offload that brings it under 8 GB.
+
+**DiffRhythm 2** is the one genuine alternative — also Apache 2.0, also built
+for full-length songs. It needs a ComfyUI workflow; nothing in the code has to
+change.
+
+Stable Audio Open is worth knowing for a different reason: it was trained *only*
+on CC-licensed Freesound and Free Music Archive audio with suspected copyrighted
+material screened out, which is the clearest training-data provenance of the
+bunch. But 47 seconds is too short for songs — treat it as a texture generator.
+
+Licences change, and none of this is legal advice. Every entry in
+`pipeline.py models` carries the URL it came from.
+
+---
+
+## 7. Output format, and the libraries doing the work
 
 ### Everything is MP3
 
@@ -401,7 +453,7 @@ Measured after encoding to MP3 and decoding back: **−1.0 dBTP**, on the nose.
 
 ---
 
-## 7. Before you upload — `check`
+## 8. Before you upload — `check`
 
 ```bat
 python pipeline.py check --log
@@ -468,7 +520,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 8. GTX 1660 Ti / 6 GB notes
+## 9. GTX 1660 Ti / 6 GB notes
 
 - **Half precision is broken on GTX 16-series cards.** Turing TU116/TU117 have no
   tensor cores and a well-known fp16 path that yields NaNs — in practice, silence
@@ -495,7 +547,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 
 ---
 
-## 9. Command reference
+## 10. Command reference
 
 | Command | Purpose |
 |---|---|
@@ -511,6 +563,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 | `analyze` | tempo, key and downbeat of any file |
 | `check` | originality + upload-readiness report (`--log` to record) |
 | `dedupe` | find near-duplicate tracks in a folder |
+| `models` | which generation models fit your card, and what their licences allow |
 | `ledger` | list everything you have exported |
 | `all` | generate → song → video in one go |
 
@@ -521,7 +574,7 @@ Shared on every command that writes audio: `--format {mp3,wav,flac}`,
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -542,3 +595,4 @@ Shared on every command that writes audio: `--format {mp3,wav,flac}`,
 | "writing MP3 needs pedalboard" | `pip install pedalboard`, or use `--format wav` |
 | Tags missing from the MP3s | `pip install mutagen` |
 | Lofi version sounds too muddy | lower `--amount`, or raise `--lowpass` |
+| Not sure which model to use | `python pipeline.py models` — it checks your VRAM and flags the non-commercial weights |
