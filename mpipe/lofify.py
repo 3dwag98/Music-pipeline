@@ -194,6 +194,10 @@ def lofify_file(src, dest, settings: LofiSettings, sr=44100, analysis=None,
     audio, _ = load_audio(src, target_sr=sr)
     if len(audio) < sr:
         raise RuntimeError(f"{src.name} is too short to work with")
+    level = integrated_lufs(audio, sr)
+    if not np.isfinite(level) or level < -50.0:
+        raise RuntimeError(f"{src.name} is silent or almost silent "
+                           f"({level:.1f} LUFS) - nothing to work with")
     audio, report = lofify_audio(audio, sr, settings, info=info, progress=progress)
     write_audio(dest, audio, sr, mp3_quality=mp3_quality)
     report["source"] = str(src)

@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from .util import die, log, warn
+from .util import die
 
 DEFAULT_SR = 44100
 
@@ -313,7 +313,6 @@ class StreamingLoudness:
 
 def _k_weight_coeffs(sr: int):
     """Combined BS.1770 pre-filter (shelf) + RLB high-pass as one filter chain."""
-    from scipy.signal import bilinear
     import numpy as _np
     # High-shelf stage (ITU-R BS.1770-4 table 1, designed at the actual sr)
     f0, G, Q = 1681.974450955533, 3.999843853973347, 0.7071752369554196

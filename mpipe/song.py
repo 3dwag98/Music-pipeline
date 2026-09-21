@@ -22,18 +22,48 @@ from . import dsp
 from .audio import StreamWriter, StreamingLoudness, integrated_lufs, load_audio
 from .drums import PATTERNS, DrumKit
 from . import effects
-from .stretch import (analyze_file, fit_to_tempo, key_distance, pitch_shift,
-                      semitones_to_key, time_stretch)
-from .theory import parse_key, key_name
+from .stretch import (analyze_file, fit_to_tempo, key_distance, semitones_to_key)
 from .util import check_disk, die, fmt_time, log, warn
 
 DEFAULT_SR = 44100
 
+#: Anything shorter than this cannot carry even a one-bar transition, and a
+#: near-zero duration poisons the crossfade estimate for the whole run.
+MIN_TRACK_SECONDS = 2.0
+
+
+def _exclude_output(paths, out_path):
+    """Never treat the file we are writing as one of the inputs.
+
+    `song --input somefolder --out somefolder/song.mp3` is a normal thing to
+    do, and on a second run the previous output is sitting right there in the
+    input folder.  Reading it back in would fold the mix into itself.
+    """
+    try:
+        target = Path(out_path).resolve()
+    except OSError:
+        return list(paths)
+    kept = []
+    for path in paths:
+        try:
+            if Path(path).resolve() == target:
+                warn(f"ignoring {Path(path).name}: it is this run's output file")
+                continue
+        except OSError:
+            pass
+        kept.append(path)
+    return kept
+
 
 # ---------------------------------------------------------------- analysis ---
 
-def analyze_tracks(paths, cache_path=None, quiet=False):
-    """Analyse every input once and memoise it (analysis is the slow part)."""
+def analyze_tracks(paths, cache_path=None, quiet=False, skipped=None):
+    """Analyse every input once and memoise it (analysis is the slow part).
+
+    Unreadable files are reported and dropped rather than raised.  Pointing
+    this at a music folder is the normal case, and a stray non-audio file
+    should not take down a job that runs for hours.
+    """
     cache = {}
     if cache_path and Path(cache_path).exists():
         try:
@@ -49,7 +79,19 @@ def analyze_tracks(paths, cache_path=None, quiet=False):
             key = str(path)
         info = cache.get(key)
         if info is None:
-            info = analyze_file(path)
+            try:
+                info = analyze_file(path)
+            except Exception as exc:
+                warn(f"skipping {path.name}: {exc}")
+                if skipped is not None:
+                    skipped.append(path.name)
+                continue
+            if (info.get("duration") or 0.0) < MIN_TRACK_SECONDS:
+                warn(f"skipping {path.name}: only "
+                     f"{info.get('duration') or 0:.1f}s of audio")
+                if skipped is not None:
+                    skipped.append(path.name)
+                continue
             cache[key] = info
             if not quiet:
                 log(f"  {path.name:<40} {info['bpm']:>6.1f} BPM  {info['key']:<9} "
@@ -260,7 +302,11 @@ class MasterBus:
 def prepare_track(info, sr, target_bpm, target_key, lufs=-15.0, tone_target=None,
                   max_stretch=18.0, max_shift=4, tone_strength=0.7, lofi=0.0):
     """Load one track and fit it to the song's tempo, key, level and tone."""
-    x, _ = load_audio(info["path"], target_sr=sr)
+    try:
+        x, _ = load_audio(info["path"], target_sr=sr)
+    except Exception as exc:
+        warn(f"skipping {Path(info['path']).name}: {exc}")
+        return None, {}
     if len(x) < sr:
         return None, {}
     notes = {}
@@ -341,13 +387,19 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
                cache_path=None, titles=None, progress=True, spine_style="dusty",
                spine_pattern="lazy", mp3_quality=320):
     """Build ONE continuous song from many tracks.  Streams; returns a report."""
-    paths = [Path(p) for p in paths]
+    paths = _exclude_output([Path(p) for p in paths], out_path)
     if not paths:
         raise ValueError("no input tracks")
     titles = titles or {}
 
     log(f"Analysing {len(paths)} tracks...")
-    tracks = analyze_tracks(paths, cache_path=cache_path, quiet=not progress)
+    unreadable = []
+    tracks = analyze_tracks(paths, cache_path=cache_path, quiet=not progress,
+                            skipped=unreadable)
+    if not tracks:
+        raise RuntimeError(
+            f"none of the {len(paths)} input(s) could be read as audio"
+            + (f" (skipped: {', '.join(unreadable[:6])})" if unreadable else ""))
     target_bpm, target_key = choose_target(tracks, bpm, key)
     ordered = order_tracks(tracks, order, seed)
     log(f"\nTarget: {target_bpm:.1f} BPM, {target_key}   "
@@ -379,7 +431,10 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
     if tone_strength > 0:
         profiles = []
         for info in ordered[: min(4, len(ordered))]:
-            sample, _ = load_audio(info["path"], target_sr=sr, max_seconds=60)
+            try:
+                sample, _ = load_audio(info["path"], target_sr=sr, max_seconds=60)
+            except Exception:
+                continue
             if len(sample):
                 profiles.append(band_profile(sample, sr))
         if profiles:
@@ -503,6 +558,7 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
         "spine": spine, "vinyl": vinyl,
         "not_beat_matched": sorted(set(skipped)),
         "too_short": sorted(too_short),
+        "unreadable": unreadable,
     }
     if skipped:
         warn(f"left at their own tempo (too far from {target_bpm:.0f} BPM to stretch "
@@ -515,7 +571,7 @@ def build_mix(paths, out_path, minutes=0.0, sr=DEFAULT_SR, crossfade=5.0,
               final_fade=8.0, shuffle=False, seed=0, titles=None, progress=True,
               peak_db=-1.0, mp3_quality=320):
     """The classic compilation: tracks back to back with equal-power crossfades."""
-    paths = [Path(p) for p in paths]
+    paths = _exclude_output([Path(p) for p in paths], out_path)
     if not paths:
         raise ValueError("no input tracks")
     titles = titles or {}
@@ -545,11 +601,21 @@ def build_mix(paths, out_path, minutes=0.0, sr=DEFAULT_SR, crossfade=5.0,
         writer.write(out)
 
     try:
+        unreadable = []
         while True:
             path = order[i % len(order)]
             if i >= len(order):
                 repeated = True
-            x, _ = load_audio(path, target_sr=sr)
+            try:
+                x, _ = load_audio(path, target_sr=sr)
+            except Exception as exc:
+                if path.name not in unreadable:
+                    warn(f"skipping {path.name}: {exc}")
+                    unreadable.append(path.name)
+                order = [p for p in order if p != path] or []
+                if not order:
+                    raise RuntimeError("none of the inputs could be read as audio") from exc
+                continue
             if len(x) < sr:
                 i += 1
                 if i > len(order) * 40:
@@ -601,7 +667,7 @@ def build_mix(paths, out_path, minutes=0.0, sr=DEFAULT_SR, crossfade=5.0,
         writer.close()
 
     return {"path": str(out_path), "seconds": writer.seconds, "segments": len(chapters),
-            "chapters": chapters, "repeated": repeated,
+            "chapters": chapters, "repeated": repeated, "unreadable": unreadable,
             "peak_dbfs": round(20 * math.log10(writer.peak + 1e-12), 2),
             "lufs": round(meter.value(), 2), "samplerate": sr}
 

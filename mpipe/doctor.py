@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .acestep import LOW_VRAM_ENV
 from .comfy import LOW_VRAM_FLAGS
-from .util import human_size, log, warn
+from .util import human_size, log
 
 #: Turing TU116/TU117 (GTX 16-series) have no tensor cores and a well-known
 #: half-precision path that produces NaNs/silence in diffusion models.  Full
@@ -175,7 +175,6 @@ def check(write_env=None, verbose=True, comfy_url="http://127.0.0.1:8188"):
 
     if write_env:
         path = Path(write_env)
-        lines = [f"{k}={v}" for k, v in tuned.items()]
         existing = {}
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():

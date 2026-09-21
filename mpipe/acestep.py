@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 
-from .util import AUDIO_EXTS, die, log, warn
+from .util import AUDIO_EXTS, die, log
 
 #: What to put in ACE-Step's .env on a GTX 1660 Ti (6 GB, Turing TU116).
 LOW_VRAM_ENV = {
@@ -74,10 +74,12 @@ class AceStepClient:
     def submit(self, payload, reference=None, source=None):
         files = {}
         try:
+            # These have to stay open across the POST, so a `with` block is not
+            # available; the `finally` below closes them on every path.
             if reference:
-                files["reference_audio"] = open(reference, "rb")
+                files["reference_audio"] = open(reference, "rb")  # noqa: SIM115
             if source:
-                files["src_audio"] = open(source, "rb")
+                files["src_audio"] = open(source, "rb")  # noqa: SIM115
             if files:
                 form = {k: (str(v).lower() if isinstance(v, bool) else str(v))
                         for k, v in payload.items()}

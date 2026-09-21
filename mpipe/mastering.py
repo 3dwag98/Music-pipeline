@@ -17,7 +17,7 @@ import soundfile as sf
 from . import dsp
 from .audio import (StreamWriter, StreamingLoudness, integrated_lufs, load_audio,
                     true_peak_db, write_audio)
-from .util import fmt_time, log, warn
+from .util import warn
 
 #: YouTube plays back at roughly -14 LUFS and asks for true peaks under -1 dBTP.
 YOUTUBE_LUFS = -14.0

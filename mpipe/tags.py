@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .util import log, warn
+from .util import warn
 
 #: What gets written into every export unless overridden.
 DISCLOSURE = "Contains AI-assisted / synthesised music. Generated locally."
