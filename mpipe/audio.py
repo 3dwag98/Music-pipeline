@@ -17,6 +17,26 @@ from .util import die, log, warn
 
 DEFAULT_SR = 44100
 
+#: Formats the pipeline can write.  MP3 goes through pedalboard (LAME), which
+#: needs no ffmpeg and streams, so an hours-long MP3 never needs a WAV first.
+LOSSY_EXTS = {".mp3"}
+DEFAULT_MP3_QUALITY = 320
+
+
+def have_pedalboard_io():
+    try:
+        from pedalboard.io import AudioFile  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _sf_can(ext):
+    try:
+        return ext.lstrip(".").upper() in sf.available_formats()
+    except Exception:
+        return False
+
 
 # ------------------------------------------------------------------ loading ---
 
@@ -59,7 +79,11 @@ def load_audio(path, target_sr=None, mono=False, max_seconds=None):
         else:
             data, sr = sf.read(str(path), dtype="float32", always_2d=True)
     except Exception as exc:
-        raise RuntimeError(f"cannot read {path.name}: {exc}") from exc
+        # libsndfile cannot always read MP3/M4A; pedalboard can
+        data_sr = _read_via_pedalboard(path, max_seconds)
+        if data_sr is None:
+            raise RuntimeError(f"cannot read {path.name}: {exc}") from exc
+        data, sr = data_sr
     data = to_stereo(data)
     if target_sr and sr != target_sr:
         data = resample(data, sr, target_sr)
@@ -67,6 +91,35 @@ def load_audio(path, target_sr=None, mono=False, max_seconds=None):
     if mono:
         data = data.mean(axis=1)
     return data, sr
+
+
+def _read_via_pedalboard(path, max_seconds=None):
+    try:
+        from pedalboard.io import AudioFile
+    except Exception:
+        return None
+    try:
+        with AudioFile(str(path)) as fh:
+            frames = fh.frames if not max_seconds else min(
+                fh.frames, int(max_seconds * fh.samplerate))
+            block = fh.read(frames)
+            return np.ascontiguousarray(block.T, dtype=np.float32), fh.samplerate
+    except Exception:
+        return None
+
+
+def audio_meta(path):
+    """samplerate / channels / duration, whichever backend can read the file."""
+    info = audio_info(path)
+    if info:
+        return info
+    try:
+        from pedalboard.io import AudioFile
+        with AudioFile(str(path)) as fh:
+            return {"samplerate": fh.samplerate, "channels": fh.num_channels,
+                    "duration": fh.duration, "frames": fh.frames}
+    except Exception:
+        return None
 
 
 def load_mono(path, sr=22050, max_seconds=None):
@@ -97,21 +150,37 @@ def iter_blocks(path, target_sr=None, block_frames=1 << 18):
 # ------------------------------------------------------------------ writing ---
 
 class StreamWriter:
-    """Incremental WAV/FLAC writer with peak + RMS metering and a frame count."""
+    """Incremental WAV/FLAC/MP3 writer with peak + RMS metering.
 
-    def __init__(self, path, sr=DEFAULT_SR, channels=2, subtype="PCM_24"):
+    MP3 is written through pedalboard (LAME) block by block, so an hours-long
+    MP3 never needs a multi-gigabyte WAV first.
+    """
+
+    def __init__(self, path, sr=DEFAULT_SR, channels=2, subtype="PCM_24",
+                 mp3_quality=DEFAULT_MP3_QUALITY):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.sr = int(sr)
         self.channels = int(channels)
-        fmt = "FLAC" if self.path.suffix.lower() == ".flac" else "WAV"
-        if fmt == "FLAC" and subtype == "PCM_32":
-            subtype = "PCM_24"
-        self._fh = sf.SoundFile(str(self.path), "w", samplerate=self.sr,
-                                channels=self.channels, subtype=subtype, format=fmt)
         self.frames = 0
         self.peak = 0.0
         self._sq_sum = 0.0
+        ext = self.path.suffix.lower()
+        self._mp3 = ext in LOSSY_EXTS
+        if self._mp3:
+            try:
+                from pedalboard.io import AudioFile
+            except Exception as exc:
+                raise RuntimeError(
+                    "writing MP3 needs pedalboard: pip install pedalboard") from exc
+            self._fh = AudioFile(str(self.path), "w", self.sr,
+                                 num_channels=self.channels, quality=mp3_quality)
+        else:
+            fmt = "FLAC" if ext == ".flac" else "WAV"
+            if fmt == "FLAC" and subtype == "PCM_32":
+                subtype = "PCM_24"
+            self._fh = sf.SoundFile(str(self.path), "w", samplerate=self.sr,
+                                    channels=self.channels, subtype=subtype, format=fmt)
 
     def write(self, block: np.ndarray) -> None:
         if block is None or len(block) == 0:
@@ -124,7 +193,8 @@ class StreamWriter:
         np.clip(block, -1.0, 1.0, out=block)
         self.peak = max(self.peak, float(np.abs(block).max()))
         self._sq_sum += float(np.square(block, dtype=np.float64).sum())
-        self._fh.write(block)
+        # pedalboard wants (channels, frames); soundfile wants (frames, channels)
+        self._fh.write(np.ascontiguousarray(block.T) if self._mp3 else block)
         self.frames += len(block)
 
     @property
@@ -151,13 +221,26 @@ class StreamWriter:
         return False
 
 
-def write_audio(path, data, sr, subtype="PCM_24"):
+def write_audio(path, data, sr, subtype="PCM_24", mp3_quality=DEFAULT_MP3_QUALITY):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = np.clip(np.asarray(data, dtype=np.float32), -1.0, 1.0)
+    if data.ndim == 1:
+        data = data[:, None]
+    if path.suffix.lower() in LOSSY_EXTS:
+        with StreamWriter(path, sr=sr, channels=data.shape[1],
+                          mp3_quality=mp3_quality) as writer:
+            writer.write(data)
+        return path
     fmt = "FLAC" if path.suffix.lower() == ".flac" else "WAV"
     sf.write(str(path), data, int(sr), subtype=subtype, format=fmt)
     return path
+
+
+def with_format(path, fmt):
+    """Swap a path's extension for the chosen output format."""
+    fmt = str(fmt).lower().lstrip(".")
+    return Path(path).with_suffix(f".{fmt}")
 
 
 # ---------------------------------------------------------------- loudness ---

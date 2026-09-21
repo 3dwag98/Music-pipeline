@@ -412,12 +412,148 @@ def test_video_loop(tmp):
     check("loop actually moves", mid > step * 3, f"mid {mid:.2f} vs step {step:.2f}")
 
 
+def test_formats(tmp):
+    print("\nmp3 / formats")
+    from mpipe.audio import StreamWriter, audio_meta, load_audio, with_format, write_audio
+    sr = 44100
+    t = np.arange(sr * 3) / sr
+    sig = np.stack([0.3 * np.sin(2 * np.pi * 220 * t)] * 2, axis=1).astype("float32")
+    for ext in (".wav", ".flac", ".mp3"):
+        path = write_audio(tmp / f"fmt{ext}", sig, sr)
+        check(f"{ext} written", path.exists() and path.stat().st_size > 500)
+        back, got = load_audio(path)
+        check(f"{ext} reads back", got == sr and abs(len(back) - len(sig)) < sr * 0.1,
+              f"{len(back)} vs {len(sig)}")
+        meta = audio_meta(path)
+        check(f"{ext} metadata", meta and abs(meta["duration"] - 3.0) < 0.15,
+              str(meta))
+    with StreamWriter(tmp / "streamed.mp3", sr=sr) as writer:
+        for i in range(0, len(sig), 4096):
+            writer.write(sig[i:i + 4096])
+    check("mp3 streams block by block", writer.frames == len(sig),
+          f"{writer.frames} vs {len(sig)}")
+    check("with_format swaps the extension",
+          with_format("a/b/song.wav", "mp3").name == "song.mp3")
+
+
+def test_tags(tmp):
+    print("\ntags")
+    from mpipe.audio import write_audio
+    from mpipe.tags import have_mutagen, read_tags, write_tags
+    if not have_mutagen():
+        print("  skip (no mutagen)")
+        return
+    sr = 44100
+    t = np.arange(sr * 2) / sr
+    path = write_audio(tmp / "tagged.mp3",
+                       np.stack([0.2 * np.sin(2 * np.pi * 330 * t)] * 2,
+                                axis=1).astype("float32"), sr)
+    ok = write_tags(path, title="Amber Streetlights", artist="Me", album="Vol 1",
+                    year=2026, track=3, bpm=78.4, key="Am")
+    check("mp3 tagged", ok)
+    tags = read_tags(path)
+    check("title round trips", tags.get("title") == "Amber Streetlights", str(tags))
+    check("bpm round trips", tags.get("bpm") == "78", str(tags))
+    check("genre defaults to lofi", tags.get("genre") == "Lofi Hip Hop", str(tags))
+
+
+def test_true_peak():
+    print("\ntrue-peak limiting")
+    from mpipe import dsp
+    from mpipe.audio import true_peak_db
+    sr = 44100
+    rng = np.random.default_rng(0)
+    t = np.arange(sr * 3) / sr
+    cases = {
+        "noise": (rng.standard_normal((sr * 3, 2)) * 1.5).astype("float32"),
+        "square": np.stack([np.sign(np.sin(2 * np.pi * 440 * t))] * 2,
+                           axis=1).astype("float32") * 1.2,
+        "tone stack": np.stack([0.3 * np.sin(2 * np.pi * 220 * t)
+                                + 0.2 * np.sin(2 * np.pi * 3000 * t)] * 2,
+                               axis=1).astype("float32") * 5,
+    }
+    for name, sig in cases.items():
+        limiter = dsp.Limiter(sr, ceiling_db=-1.0, true_peak=True)
+        out = np.concatenate([limiter.process(sig[i:i + 7000])
+                              for i in range(0, len(sig), 7000)] + [limiter.flush()])
+        tp = true_peak_db(out, sr)
+        # a sample-domain limiter reconstructs at over +2 dBTP on noise, which
+        # then clips in any lossy encode - this is the check that catches it
+        check(f"true peak held on {name}", tp <= -0.5, f"{tp:.2f} dBTP")
+    from mpipe import effects
+    out = effects.brickwall(cases["tone stack"], sr, ceiling_db=-1.0, true_peak=True)
+    check("one-shot brickwall holds", true_peak_db(out, sr) <= -0.5,
+          f"{true_peak_db(out, sr):.2f} dBTP")
+
+
+def test_lofify(tmp):
+    print("\nlofify")
+    from mpipe.audio import load_audio, write_audio
+    from mpipe.effects import backend_name
+    from mpipe.engine import SongSpec, render_song
+    from mpipe.lofify import PRESETS, lofify_file, settings_from_preset
+    from mpipe.stretch import analyze_file
+
+    src = tmp / "song_in.wav"
+    render_song(SongSpec(seed=5, bpm=92, key="C Major"), src, minutes=0.7, progress=False)
+    audio, sr = load_audio(src)
+    # a dead-centre tone stands in for a lead vocal
+    t = np.arange(len(audio)) / sr
+    vox = (0.25 * np.sin(2 * np.pi * 440 * t)).astype("float32")
+    audio[:, 0] += vox
+    audio[:, 1] += vox
+    write_audio(src, audio, sr)
+
+    def centre_level(path):
+        data, rate = load_audio(path)
+        mono = data.mean(axis=1)
+        spec = np.abs(np.fft.rfft(mono * np.hanning(len(mono))))
+        freqs = np.fft.rfftfreq(len(mono), 1 / rate)
+        i = int(np.argmin(np.abs(freqs - 440)))
+        return float(spec[max(0, i - 4):i + 5].max() / (spec.max() + 1e-12))
+
+    before = centre_level(src)
+    info = analyze_file(src)
+    check("source tempo detected", abs(info["bpm"] - 92) < 4, f"{info['bpm']}")
+
+    settings = settings_from_preset("classic")
+    report = lofify_file(src, tmp / "out.mp3", settings, analysis=info, progress=False)
+    check("lofi output written", (tmp / "out.mp3").exists())
+    check("slowed down", report["seconds"] > info["duration"] * 1.05,
+          f"{report['seconds']} vs {info['duration']}")
+    check("pitch follows speed", report["semitones"] < -1.0, str(report["semitones"]))
+    check("output tempo reported",
+          abs(report["output_bpm"] - info["bpm"] * settings.speed) < 0.5,
+          str(report["output_bpm"]))
+    check("loudness on target", abs(report["lufs_out"] + 14.0) < 0.6,
+          str(report["lufs_out"]))
+    check("true peak under ceiling", report["true_peak_db"] <= -0.9,
+          str(report["true_peak_db"]))
+    after = centre_level(tmp / "out.mp3")
+    check("centre vocal attenuated", after < before * 0.1,
+          f"{before:.3f} -> {after:.3f}")
+
+    kept = settings_from_preset("classic", vocals="keep", speed=1.0)
+    rep2 = lofify_file(src, tmp / "kept.mp3", kept, analysis=info, progress=False)
+    check("--vocals keep leaves it alone",
+          centre_level(tmp / "kept.mp3") > before * 0.2,
+          f"{centre_level(tmp / 'kept.mp3'):.3f} vs {before:.3f}")
+    check("speed 1.0 keeps the length",
+          abs(rep2["seconds"] - info["duration"]) < info["duration"] * 0.08,
+          f"{rep2['seconds']} vs {info['duration']}")
+
+    for name in PRESETS:
+        settings_from_preset(name)
+    check(f"all {len(PRESETS)} presets build", True)
+    print(f"  (effects backend: {backend_name()})")
+
+
 def test_cli():
     print("\ncli")
     import pipeline
     for args in (["--help"], ["lofi", "-h"], ["song", "-h"], ["all", "-h"],
                  ["check", "-h"], ["doctor", "-h"], ["art", "-h"],
-                 ["generate", "-h"]):
+                 ["generate", "-h"], ["lofify", "-h"], ["mix", "-h"]):
         try:
             pipeline.main(args)
         except SystemExit as exc:
@@ -433,6 +569,10 @@ def main():
         test_dsp()
         test_stretch()
         test_loudness()
+        test_true_peak()
+        test_formats(tmp)
+        test_tags(tmp)
+        test_lofify(tmp)
         test_fingerprint(tmp)
         test_comfy_workflows()
         test_comfy_roundtrip(tmp)

@@ -54,7 +54,7 @@ def apply_fades(data, sr, fade_in, fade_out):
 
 def master_file(src, dest, lufs=YOUTUBE_LUFS, peak_db=YOUTUBE_PEAK_DB,
                 fade_in=0.05, fade_out=0.05, trim=True, min_seconds=10.0,
-                silence_floor=-45.0):
+                silence_floor=-45.0, mp3_quality=320):
     """Master one track.  Returns a report dict, or None if the track is rejected."""
     data, sr = load_audio(src)
     if trim:
@@ -67,8 +67,9 @@ def master_file(src, dest, lufs=YOUTUBE_LUFS, peak_db=YOUTUBE_PEAK_DB,
 
     data = data * (10 ** ((lufs - before) / 20.0))
     data = apply_fades(data, sr, fade_in, fade_out)
-    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=5.0, release_ms=120.0)
-    data = np.concatenate([limiter.process(data), limiter.flush()])
+    # whole track in memory, so use the one-shot true-peak brickwall
+    from . import effects
+    data = effects.brickwall(data, sr, ceiling_db=peak_db, true_peak=True)
     after = integrated_lufs(data, sr)
     # one correction pass: limiting a loud master pulls the level down a little
     drift = lufs - after
@@ -77,7 +78,7 @@ def master_file(src, dest, lufs=YOUTUBE_LUFS, peak_db=YOUTUBE_PEAK_DB,
         np.clip(data, -(10 ** (peak_db / 20.0)), 10 ** (peak_db / 20.0), out=data)
         after = integrated_lufs(data, sr)
 
-    write_audio(dest, data, sr, subtype="PCM_24")
+    write_audio(dest, data, sr, subtype="PCM_24", mp3_quality=mp3_quality)
     return {"skipped": None, "lufs_in": round(float(before), 1),
             "lufs_out": round(float(after), 1), "seconds": round(len(data) / sr, 2),
             "true_peak_db": round(true_peak_db(data, sr), 2), "samplerate": sr}
@@ -108,7 +109,8 @@ def measure_stream(path, block=1 << 18):
 
 
 def normalise_stream(src, dest, lufs=YOUTUBE_LUFS, peak_db=YOUTUBE_PEAK_DB,
-                     fade_out=0.0, block=1 << 18, subtype="PCM_24", report=None):
+                     fade_out=0.0, block=1 << 18, subtype="PCM_24", report=None,
+                     mp3_quality=320):
     """Two-pass loudness normalisation that never loads the whole file.
 
     Pass 1 measures, pass 2 applies a single static gain through a look-ahead
@@ -124,13 +126,15 @@ def normalise_stream(src, dest, lufs=YOUTUBE_LUFS, peak_db=YOUTUBE_PEAK_DB,
         return stats
 
     gain = 10 ** ((lufs - stats["lufs"]) / 20.0)
-    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=6.0, release_ms=140.0)
+    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=6.0, release_ms=140.0,
+                          true_peak=True)
     meter = StreamingLoudness(sr)
     total = stats["frames"]
     fade_n = int(max(0.0, fade_out) * sr)
     fade_start = max(0, total - fade_n)
 
-    writer = StreamWriter(dest, sr=sr, channels=2, subtype=subtype)
+    writer = StreamWriter(dest, sr=sr, channels=2, subtype=subtype,
+                          mp3_quality=mp3_quality)
     pos = 0
     try:
         with sf.SoundFile(str(src)) as fh:

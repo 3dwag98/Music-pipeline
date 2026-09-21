@@ -38,6 +38,33 @@ from mpipe.util import (DEFAULT_PRESETS, RUNS_DIR, audio_files, collect_inputs,
 
 LEDGER_PATH = Path(__file__).resolve().parent / "upload_ledger.json"
 
+#: MP3 is the default everywhere: it is what gets uploaded, and a 3-hour WAV is
+#: 3.2 GB against 430 MB for the same thing at 320 kbps.  --format wav keeps the
+#: lossless path for anyone who wants to master elsewhere.
+DEFAULT_FORMAT = "mp3"
+
+
+def _fmt(args):
+    return str(getattr(args, "format", DEFAULT_FORMAT) or DEFAULT_FORMAT).lower()
+
+
+def _quality(args):
+    return getattr(args, "mp3_quality", 320)
+
+
+def _out_path(base, args):
+    """Give `base` the chosen output extension."""
+    from mpipe.audio import with_format
+    return with_format(base, _fmt(args))
+
+
+def _tag(path, args, **fields):
+    """Write ID3/metadata, quietly doing nothing when mutagen is missing."""
+    from mpipe.tags import write_tags
+    if getattr(args, "no_tags", False):
+        return
+    write_tags(path, quiet=True, **fields)
+
 
 # ---------------------------------------------------------------------------
 # lofi - the built-in engine
@@ -128,21 +155,25 @@ def cmd_lofi(args):
         spec = preset_to_spec(presets, args.style, track_rng, args, index=i - 1)
         if args.mood and args.mood.lower() not in presets.get("moods", {}):
             spec.title = f"{spec.title}"
-        stem = raw / f"{i:02d}_{slug(spec.title)}.wav"
+        stem = _out_path(raw / f"{i:02d}_{slug(spec.title)}", args)
         log(f"[{i}/{args.count}] {spec.title}  |  {spec.bpm:.0f} BPM, {spec.key}, "
             f"{args.minutes:g} min, {spec.drum_pattern}/{spec.chord_instrument}")
         try:
             report = render_song(spec, stem, minutes=args.minutes, sr=args.samplerate,
-                                 progress=args.verbose, peak_db=args.peak)
+                                 progress=args.verbose, peak_db=args.peak,
+                                 mp3_quality=_quality(args))
         except KeyboardInterrupt:
             write_manifest(run, manifest)
             die("stopped by user (finished tracks are kept)")
         if args.lufs is not None:
             stats = measure_stream(stem)
-            normalise_stream(stem, stem.with_suffix(".tmp.wav"), lufs=args.lufs,
-                             peak_db=args.peak, report=stats)
-            stem.with_suffix(".tmp.wav").replace(stem)
+            tmp = stem.with_name(stem.stem + ".tmp" + stem.suffix)
+            normalise_stream(stem, tmp, lufs=args.lufs, peak_db=args.peak,
+                             report=stats, mp3_quality=_quality(args))
+            tmp.replace(stem)
             report["lufs"] = args.lufs
+        _tag(stem, args, title=spec.title, artist=args.artist, album=args.album,
+             track=i, bpm=spec.bpm, key=spec.key, year=datetime.now().year)
         log(f"    -> {stem.name}  {fmt_time(report['seconds'])}  "
             f"{report['progression']}  {report['lufs']} LUFS\n")
         manifest["tracks"].append({
@@ -502,9 +533,10 @@ def cmd_master(args):
     manifest = read_manifest(run)
     reports = {}
     for path in sources:
-        report = master_file(path, out_dir / f"{path.stem}.wav", lufs=args.lufs,
-                             peak_db=args.peak, fade_in=args.fade_in,
-                             fade_out=args.fade_out, trim=not args.no_trim)
+        report = master_file(path, _out_path(out_dir / path.stem, args),
+                             lufs=args.lufs, peak_db=args.peak,
+                             fade_in=args.fade_in, fade_out=args.fade_out,
+                             trim=not args.no_trim, mp3_quality=_quality(args))
         if report.get("skipped"):
             log(f"  SKIP {path.name}: {report['skipped']}")
             continue
@@ -559,7 +591,7 @@ def cmd_song(args):
 
     run = resolve_run(args.run) if (args.run or not args.input) else new_run("song")
     files = _inputs_for(args, run)
-    out = Path(args.out) if args.out else run / "song.wav"
+    out = Path(args.out) if args.out else _out_path(run / "song", args)
     minutes = _minutes_from(args)
     log(f"Building one continuous song from {len(files)} tracks"
         + (f", target {fmt_time(minutes * 60, minutes >= 60)}" if minutes else "") + "\n")
@@ -572,12 +604,14 @@ def cmd_song(args):
         lofi=args.lofi, max_stretch=args.max_stretch, max_shift=args.max_shift,
         fade_out=args.final_fade, cache_path=run / "analysis.json",
         titles=_titles_from(run), progress=args.verbose,
-        spine_style=args.spine_style, spine_pattern=args.spine_pattern)
+        spine_style=args.spine_style, spine_pattern=args.spine_pattern,
+        mp3_quality=_quality(args))
 
     if abs(report["lufs"] - args.lufs) > 0.5:
         log(f"\nNormalising {report['lufs']} -> {args.lufs} LUFS...")
-        tmp = out.with_suffix(".norm.wav")
-        result = normalise_stream(out, tmp, lufs=args.lufs, peak_db=args.peak)
+        tmp = out.with_name(out.stem + ".norm" + out.suffix)
+        result = normalise_stream(out, tmp, lufs=args.lufs, peak_db=args.peak,
+                                  mp3_quality=_quality(args))
         tmp.replace(out)
         report["lufs"] = result["lufs_out"]
         report["peak_dbfs"] = result["peak_dbfs"]
@@ -585,6 +619,10 @@ def cmd_song(args):
     tracklist = out.with_name(out.stem + "_tracklist.txt")
     lines = write_tracklist(tracklist, report["chapters"], report["seconds"])
     _write_report(run, "song", report)
+    _tag(out, args, title=args.title or out.stem.replace("_", " ").title(),
+         artist=args.artist, album=args.album, bpm=report["target_bpm"],
+         key=report["target_key"], year=datetime.now().year,
+         cover=_find_cover(run))
 
     log(f"\nSong:      {out}")
     log(f"Length:    {fmt_time(report['seconds'], report['seconds'] >= 3600)}   "
@@ -606,17 +644,20 @@ def cmd_mix(args):
 
     run = resolve_run(args.run) if (args.run or not args.input) else new_run("mix")
     files = _inputs_for(args, run)
-    out = Path(args.out) if args.out else run / "mix.wav"
+    out = Path(args.out) if args.out else _out_path(run / "mix", args)
     minutes = _minutes_from(args)
 
     report = build_mix(files, out, minutes=minutes, sr=args.samplerate,
                        crossfade=args.crossfade, final_fade=args.final_fade,
                        shuffle=args.shuffle, seed=args.seed or 0,
                        titles=_titles_from(run), progress=args.verbose,
-                       peak_db=args.peak)
+                       peak_db=args.peak, mp3_quality=_quality(args))
     tracklist = out.with_name(out.stem + "_tracklist.txt")
     lines = write_tracklist(tracklist, report["chapters"], report["seconds"])
     _write_report(run, "mix", report)
+    _tag(out, args, title=args.title or out.stem.replace("_", " ").title(),
+         artist=args.artist, album=args.album, year=datetime.now().year,
+         cover=_find_cover(run))
 
     log(f"\nMix:      {out}  ({fmt_time(report['seconds'], report['seconds'] >= 3600)}, "
         f"{report['segments']} segments)")
@@ -630,19 +671,19 @@ def cmd_mix(args):
     return run
 
 
+def _find_cover(run):
+    """The newest ComfyUI artwork in this run, for embedding as cover art."""
+    art = Path(run) / "art"
+    if not art.is_dir():
+        return None
+    images = sorted(art.glob("*.png")) + sorted(art.glob("*.jpg"))
+    return str(images[0]) if images else None
+
+
 def _maybe_mp3(args, out):
-    if not getattr(args, "mp3", False):
-        return
-    if not ffmpeg_ok():
-        warn("--mp3 needs ffmpeg on PATH; skipping (the WAV is fine to upload)")
-        return
-    from mpipe.video import tag_audio
-    dest = out.with_suffix(".mp3")
-    tag_audio(out, dest, {"title": out.stem.replace("_", " ").title(),
-                          "genre": "Lofi Hip Hop",
-                          "comment": "Generated locally. Contains AI-assisted / "
-                                     "synthesised music."})
-    log(f"MP3:      {dest}")
+    """Kept for the old --mp3 flag; MP3 is now the default output format."""
+    if getattr(args, "mp3", False) and out.suffix.lower() != ".mp3":
+        log("(--mp3 is the default now; use --format mp3)")
 
 
 def _write_report(run, name, report):
@@ -650,6 +691,93 @@ def _write_report(run, name, report):
     payload["chapters"] = [[round(t, 2), n] for t, n in report.get("chapters", [])]
     path = Path(run) / f"{name}_report.json"
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# lofify - turn songs you already have into lofi
+# ---------------------------------------------------------------------------
+
+def cmd_lofify(args):
+    from mpipe.lofify import LofiSettings, PRESETS, lofify_file, settings_from_preset
+    from mpipe.stretch import analyze_file
+
+    sources = collect_inputs(args.input)
+    if not sources:
+        die(f"no audio found in: {' '.join(args.input)}")
+    if not args.i_own_this:
+        die("`lofify` rebuilds a recording you supply.  A lofi remix of someone\n"
+            "       else's record is still their record, and re-uploading one is the\n"
+            "       most reliable way to get a copyright claim.\n"
+            "       Re-run with --i-own-this if the audio is yours, licensed to you,\n"
+            "       or public domain.")
+
+    overrides = dict(
+        speed=args.speed, keep_pitch=True if args.keep_pitch else None,
+        semitones=args.semitones, vocals=args.vocals, vocal_amount=args.vocal_amount,
+        drums=args.drums, drum_level=args.drum_level, drum_pattern=args.drum_pattern,
+        drum_style=args.drum_style, amount=args.amount, lowpass_hz=args.lowpass,
+        bitcrush_bits=args.bitcrush, vinyl=args.vinyl, reverb=args.reverb,
+        telephone=args.telephone, mp3_artifacts=args.mp3_artifacts,
+        lufs=args.lufs, peak_db=args.peak, seed=args.seed)
+    try:
+        settings = settings_from_preset(args.preset, **overrides)
+    except KeyError:
+        die(f"unknown preset '{args.preset}'. Available: {', '.join(PRESETS)}")
+
+    run = Path(args.run) if args.run else new_run(f"lofify_{args.preset}")
+    out_dir = run / "raw"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = read_manifest(run)
+    manifest.update({
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "engine": "lofify", "version": __version__, "preset": args.preset,
+        "settings": settings.to_dict(),
+        "source": "user-supplied recordings, reprocessed",
+        "rights_attested": True,
+    })
+    manifest.setdefault("tracks", [])
+    write_manifest(run, manifest)
+
+    from mpipe.effects import backend_name, have_demucs
+    log(f"Run folder: {run}")
+    log(f"Preset: {args.preset}   effects: {backend_name()}   "
+        f"separation: {'demucs' if have_demucs() else 'centre-channel'}\n")
+
+    done = 0
+    for i, src in enumerate(sources, 1):
+        log(f"[{i}/{len(sources)}] {src.name}")
+        try:
+            info = analyze_file(src)
+            dest = _out_path(out_dir / f"{i:02d}_{slug(src.stem)}_lofi", args)
+            report = lofify_file(src, dest, settings, sr=args.samplerate,
+                                 analysis=info, progress=args.verbose,
+                                 mp3_quality=_quality(args))
+        except KeyboardInterrupt:
+            write_manifest(run, manifest)
+            die("stopped by user (finished tracks are kept)")
+        except Exception as exc:
+            log(f"    failed: {exc}")
+            manifest["tracks"].append({"index": i, "source": str(src),
+                                       "status": "failed", "error": str(exc)})
+            write_manifest(run, manifest)
+            continue
+        _tag(dest, args, title=f"{src.stem} (lofi)", artist=args.artist,
+             album=args.album, track=i, bpm=report.get("output_bpm"),
+             year=datetime.now().year)
+        log(f"    -> {dest.name}  {fmt_time(report['seconds'])}  "
+            f"{report['output_bpm'] or '?'} BPM  {report['lufs_out']} LUFS  "
+            f"{report['true_peak_db']} dBTP")
+        log(f"    {report['vocals']}\n")
+        manifest["tracks"].append({"index": i, "title": f"{src.stem} (lofi)",
+                                   "file": dest.name, "status": "ok",
+                                   "source": str(src), "report": report})
+        write_manifest(run, manifest)
+        done += 1
+
+    log(f"Done: {done}/{len(sources)} tracks in {out_dir}")
+    if done:
+        log(f"Next:  python pipeline.py song --run {run} --hours 1")
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +952,16 @@ def _provenance_for(path):
     if engine == "builtin":
         lines.append("source: built-in engine - every sound synthesised from scratch.")
         lines.append("        no samples, no loops, no third-party recordings.")
+    elif engine == "lofify":
+        sources = sorted({Path(t.get("source", "")).name
+                          for t in manifest.get("tracks", []) if t.get("source")})
+        lines.append("source: YOUR OWN recordings, reprocessed into lofi.")
+        lines.append(f"        built from: {', '.join(sources[:6])}"
+                     f"{' ...' if len(sources) > 6 else ''}")
+        lines.append("        you attested to holding the rights with --i-own-this.")
+        lines.append("        Nothing here can verify that - if any of those inputs")
+        lines.append("        is someone else's recording, a lofi edit of it is still")
+        lines.append("        theirs, and Content ID matches edited audio.")
     elif engine == "ace-step":
         lines.append("source: ACE-Step (local model, text-to-music).")
         if manifest.get("reference"):
@@ -961,6 +1099,46 @@ def add_generate_args(p):
     p.add_argument("--retries", type=int, default=1)
 
 
+def add_output_args(p):
+    p.add_argument("--format", choices=["mp3", "wav", "flac"], default=DEFAULT_FORMAT,
+                   help="output format (default mp3)")
+    p.add_argument("--mp3-quality", default=320,
+                   help="MP3 bitrate (320, 256, 192) or VBR quality (V0, V2)")
+    p.add_argument("--artist", help="artist tag written into the files")
+    p.add_argument("--album", help="album tag written into the files")
+    p.add_argument("--title", help="title tag for the final song/mix")
+    p.add_argument("--no-tags", action="store_true", help="do not write metadata")
+
+
+def add_lofify_args(p):
+    p.add_argument("input", nargs="+", help="songs to lofi (files, a folder, or a .txt list)")
+    p.add_argument("--preset", default="classic",
+                   help="classic, slowed, study, sleep, tape, instrumental")
+    p.add_argument("--i-own-this", action="store_true",
+                   help="confirm you hold the rights to the input audio (required)")
+    p.add_argument("--speed", type=float, help="playback speed (0.88 = the usual slowdown)")
+    p.add_argument("--keep-pitch", action="store_true",
+                   help="slow it down without dropping the pitch")
+    p.add_argument("--semitones", type=float, help="extra transposition")
+    p.add_argument("--vocals", choices=["keep", "reduce", "remove"],
+                   help="what to do with the lead vocal")
+    p.add_argument("--vocal-amount", type=float, help="0-1, how hard to pull it down")
+    p.add_argument("--drums", choices=["off", "add"], help="lay a boom-bap kit under it")
+    p.add_argument("--drum-level", type=float)
+    p.add_argument("--drum-pattern", help="boom_bap, lazy, halftime, swing, shuffle, brushed")
+    p.add_argument("--drum-style", choices=["dusty", "soft", "punchy", "brush"])
+    p.add_argument("--amount", type=float, help="0-1, overall lofi character")
+    p.add_argument("--lowpass", type=float, help="lowpass in Hz (overrides --amount)")
+    p.add_argument("--bitcrush", type=int, help="bit depth (overrides --amount)")
+    p.add_argument("--vinyl", type=float, help="vinyl crackle bed, 0 = off")
+    p.add_argument("--reverb", type=float, help="0-1 room amount")
+    p.add_argument("--telephone", type=float, help="0-1 GSM/telephone grit")
+    p.add_argument("--mp3-artifacts", type=float, help="0-1 deliberate codec crunch")
+    p.add_argument("--lufs", type=float, default=-14.0)
+    p.add_argument("--peak", type=float, default=-1.0)
+    p.add_argument("--seed", type=int, default=0)
+
+
 def add_comfy_args(p):
     p.add_argument("--comfy-url", default="http://127.0.0.1:8188",
                    help="ComfyUI address")
@@ -1025,7 +1203,7 @@ def add_song_args(p):
     p.add_argument("--lufs", type=float, default=-14.0)
     p.add_argument("--peak", type=float, default=-1.0)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--mp3", action="store_true", help="also write an MP3 (needs ffmpeg)")
+    p.add_argument("--mp3", action="store_true", help=argparse.SUPPRESS)
 
 
 def add_mix_args(p):
@@ -1038,7 +1216,7 @@ def add_mix_args(p):
     p.add_argument("--shuffle", action="store_true")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--peak", type=float, default=-1.0)
-    p.add_argument("--mp3", action="store_true")
+    p.add_argument("--mp3", action="store_true", help=argparse.SUPPRESS)
 
 
 def add_video_args(p):
@@ -1114,7 +1292,7 @@ def add_all_args(p):
     p.add_argument("--max-stretch", type=float, default=18.0)
     p.add_argument("--max-shift", type=int, default=4)
     p.add_argument("--final-fade", type=float, default=12.0)
-    p.add_argument("--mp3", action="store_true")
+    p.add_argument("--mp3", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--out", help="final song path")
     # --- video ---
     p.add_argument("--loop", help="looping clip to put under the song")
@@ -1126,7 +1304,6 @@ def add_all_args(p):
     p.add_argument("--fps", type=int)
     p.add_argument("--nvenc", action="store_true")
     p.add_argument("--reencode", action="store_true")
-    p.add_argument("--title")
     p.add_argument("--dry-run", action="store_true")
 
 
@@ -1150,14 +1327,22 @@ def main(argv=None):
 
     p = sub.add_parser("lofi", help="generate tracks with the built-in engine (no GPU)")
     add_common(p)
+    add_output_args(p)
     add_lofi_args(p)
     p.set_defaults(func=cmd_lofi)
 
     p = sub.add_parser("generate", help="generate tracks with ACE-Step (needs the GPU)")
     add_common(p)
+    add_output_args(p)
     add_generate_args(p)
     add_comfy_args(p)
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("lofify", help="turn songs you already have into lofi")
+    add_common(p)
+    add_lofify_args(p)
+    add_output_args(p)
+    p.set_defaults(func=cmd_lofify)
 
     p = sub.add_parser("art", help="make the cover art and a seamless video loop (ComfyUI)")
     add_common(p)
@@ -1167,16 +1352,19 @@ def main(argv=None):
 
     p = sub.add_parser("master", help="trim, loudness-normalise and limit each track")
     add_common(p)
+    add_output_args(p)
     add_master_args(p)
     p.set_defaults(func=cmd_master)
 
     p = sub.add_parser("song", help="beat-match tracks into ONE continuous lofi song")
     add_common(p)
+    add_output_args(p)
     add_song_args(p)
     p.set_defaults(func=cmd_song)
 
     p = sub.add_parser("mix", help="classic crossfaded compilation + chapters")
     add_common(p)
+    add_output_args(p)
     add_mix_args(p)
     p.set_defaults(func=cmd_mix)
 
@@ -1213,6 +1401,7 @@ def main(argv=None):
 
     p = sub.add_parser("all", help="generate + song (+ video) in one go")
     add_common(p)
+    add_output_args(p)
     add_all_args(p)
     p.set_defaults(func=cmd_all)
 

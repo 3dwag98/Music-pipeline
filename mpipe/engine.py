@@ -416,7 +416,7 @@ def render_section(spec, section, events, chords, sr, cache, kit, tail_samples,
 
 
 def render_song(spec: SongSpec, out_path, minutes=3.0, sr=44100, progress=True,
-                stems_dir=None, target_lufs=-14.0, peak_db=-1.0):
+                stems_dir=None, target_lufs=-14.0, peak_db=-1.0, mp3_quality=320):
     """Compose and stream a complete song to `out_path`.  Returns a report dict."""
     rng = random.Random(spec.seed)
     root_pc, scale = parse_key(spec.key)
@@ -427,7 +427,8 @@ def render_song(spec: SongSpec, out_path, minutes=3.0, sr=44100, progress=True,
     cache = NoteCache(sr)
     kit = DrumKit(sr, spec.drum_style, seed=spec.seed)
     chain = LofiChain(sr, spec, seed=spec.seed)
-    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=6.0, release_ms=140.0)
+    limiter = dsp.Limiter(sr, ceiling_db=peak_db, lookahead_ms=6.0, release_ms=140.0,
+                          true_peak=True)
     motif = make_motif(rng, length=rng.randint(4, 7))
 
     beat = 60.0 / spec.bpm
@@ -437,7 +438,8 @@ def render_song(spec: SongSpec, out_path, minutes=3.0, sr=44100, progress=True,
 
     from .audio import StreamingLoudness
     meter = StreamingLoudness(sr)
-    writer = StreamWriter(out_path, sr=sr, channels=2, subtype="PCM_24")
+    writer = StreamWriter(out_path, sr=sr, channels=2, subtype="PCM_24",
+                          mp3_quality=mp3_quality)
     carry = None
     bar_cursor = 0
     markers = []

@@ -22,7 +22,8 @@ if errorlevel 1 goto :fail
 echo.
 "%PY%" pipeline.py check
 echo.
-echo Done. The song and its tracklist are in the newest folder under runs\
+echo Done. The MP3 and its tracklist are in the newest folder under runs\
+echo To lofi songs you already own instead, use make_lofify.bat
 pause
 exit /b 0
 
