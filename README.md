@@ -133,18 +133,33 @@ Useful knobs: `--bpm`, `--key "A Minor"`, `--swing 0.25`, `--vinyl 0`,
 > with their **licences** and VRAM, marked up for your card. Read it before you
 > pick one — see §6.
 
-For a neural generator's sound. Needs the ACE-Step Windows portable package
-running its API server on `127.0.0.1:8001`.
+For a neural generator's sound. **ACE-Step is a separate program** — it is not
+part of this repo and nothing here installs it. You need it running and serving
+its API on `127.0.0.1:8001` before `generate` will do anything.
+
+Install it once (this is its own CLI, from its own repo — there is no
+`start_api_server.bat` any more; older guides that mention one are out of date):
+
+```bat
+pip install acestep
+acestep --port 8001 --cpu_offload true --overlapped_decode true
+```
+
+Leave that window open — the first run downloads several GB of weights. Then
+check `http://127.0.0.1:8001/health` says ok, and in a second terminal:
 
 ```bat
 python pipeline.py doctor --write-env "C:\ACE-Step\.env"   :: writes 6 GB settings
-:: start_api_server.bat, wait for http://127.0.0.1:8001/health to say ok
 python pipeline.py generate --genre lofi --count 10 --duration 150
 python pipeline.py master
 ```
 
 `doctor --write-env` writes the low-VRAM configuration (turbo checkpoint, no
-caption LLM, CPU offload, float32) and backs up any existing `.env` first.
+caption LLM, CPU offload, float32) and backs up any existing `.env` first. On a
+6 GB card `--cpu_offload true` is not optional; see §9.
+
+`python pipeline.py doctor` tells you whether anything is actually listening on
+8001 before you spend time on a run.
 
 No GPU handy? `python mock_server.py` in a second terminal fakes the API so you
 can rehearse the whole flow.

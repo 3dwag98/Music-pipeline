@@ -1070,6 +1070,14 @@ def cmd_all(args):
     log("\n=== song ===")
     song_args = copy.copy(args)
     song_args.out = args.out                   # final song length stays on --minutes/--hours
+    # The generator already used each style's own vinyl/tape (args.* is None
+    # unless the user asked for something).  The song builder needs concrete
+    # numbers, so fill in its own defaults here rather than on the parser,
+    # where they would have overridden the styles during generation.
+    if song_args.vinyl is None:
+        song_args.vinyl = 0.8
+    if song_args.tape is None:
+        song_args.tape = 0.7
     cmd_song(song_args)
     if args.loop or args.image:
         log("\n=== video ===")
@@ -1306,8 +1314,14 @@ def add_all_args(p):
     p.add_argument("--seed", type=int)
     p.add_argument("--lufs", type=float, default=-14.0)
     p.add_argument("--peak", type=float, default=-1.0)
-    p.add_argument("--vinyl", type=float, default=0.8)
-    p.add_argument("--tape", type=float, default=0.7)
+    # No defaults here on purpose.  `all` feeds the same namespace to both the
+    # generator and the song builder, so a default set for the song stage would
+    # silently override every style's own vinyl/tape values during generation.
+    # None means "each stage uses its own default" - see cmd_all.
+    p.add_argument("--vinyl", type=float,
+                   help="vinyl amount for both stages (default: per-style, then 0.8 for the song)")
+    p.add_argument("--tape", type=float,
+                   help="tape amount for both stages (default: per-style, then 0.7 for the song)")
     # --- mastering (ACE-Step path) ---
     p.add_argument("--fade-in", type=float, default=0.05)
     p.add_argument("--fade-out", type=float, default=0.05)

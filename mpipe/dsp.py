@@ -466,7 +466,11 @@ class TapeWow:
 class VinylNoise:
     """Continuous vinyl bed: pink-ish noise floor, sparse crackle, 33 rpm ticks."""
 
-    def __init__(self, sr, level_db=-38.0, crackle=1.0, rpm=33.3333, seed=0, hiss_db=-52.0):
+    #: Surface clicks per second at crackle=1.0.  Real vinyl is sparse; a dense
+    #: stream of clicks stops reading as "record" and starts reading as hiss.
+    CRACKLE_RATE = 7.0
+
+    def __init__(self, sr, level_db=-38.0, crackle=1.0, rpm=33.3333, seed=0, hiss_db=-60.0):
         self.sr = sr
         self.level = 10 ** (level_db / 20.0)
         self.hiss = 10 ** (hiss_db / 20.0)
@@ -475,8 +479,42 @@ class VinylNoise:
         self.rng = np.random.default_rng(seed)
         self._t = 0
         self._pink_state = [np.zeros(1) for _ in range(3)]
-        self._lp = Biquad("lowpass", sr, 9000.0, 0.7, channels=2)
+        self._lp = Biquad("lowpass", sr, 7500.0, 0.7, channels=2)
         self._hp = Biquad("highpass", sr, 38.0, 0.7, channels=2)
+        self._clicks = self._click_bank(sr)
+
+    @staticmethod
+    def _click_bank(sr, count=16):
+        """Short resonant clicks, the shape a real surface defect actually makes.
+
+        A one-sample impulse - which is what this used to add - has flat energy
+        all the way to Nyquist, so a stream of them reads as digital sizzle
+        rather than as a record.  A few milliseconds of damped resonance in the
+        1-5 kHz band is both what vinyl does and far less fatiguing.
+        """
+        rng = np.random.default_rng(90210)
+        bank = []
+        for _ in range(count):
+            dur = float(rng.uniform(0.0015, 0.0060))
+            n = max(8, int(dur * sr))
+            t = np.arange(n, dtype=np.float64) / sr
+            freq = float(rng.uniform(900.0, 4800.0))
+            env = np.exp(-t / (dur / 3.0))
+            wave = np.sin(TWO_PI * freq * t + rng.uniform(0.0, TWO_PI)) * env
+            wave += rng.standard_normal(n) * env * 0.45
+            wave /= (np.abs(wave).max() + 1e-9)
+            bank.append(wave.astype(np.float32))
+        return bank
+
+    def _add_click(self, noise, pos, amp, n):
+        click = self._clicks[int(self.rng.integers(len(self._clicks)))]
+        end = min(n, pos + len(click))
+        if end <= pos:
+            return
+        seg = click[: end - pos] * amp
+        spread = float(self.rng.random() * 0.8 + 0.2)
+        noise[pos:end, 0] += seg
+        noise[pos:end, 1] += seg * spread
 
     def _pink_noise(self, n):
         """Paul Kellett pink filter as three one-poles - vectorised via lfilter."""
@@ -494,24 +532,19 @@ class VinylNoise:
         noise = np.stack([bed, np.roll(bed, 7)], axis=1).astype(np.float32) * self.level
         noise += self.rng.standard_normal((n, 2)).astype(np.float32) * self.hiss
         if self.crackle > 0:
-            rate = 24.0 * self.crackle
+            rate = self.CRACKLE_RATE * self.crackle
             count = self.rng.poisson(rate * n / self.sr)
             if count:
                 pos = self.rng.integers(0, max(1, n - 3), size=count)
-                amp = (self.rng.random(count) ** 3.2).astype(np.float32) * 0.42 * self.crackle
+                amp = (self.rng.random(count) ** 3.2).astype(np.float32) * 0.30 * self.crackle
                 sign = self.rng.choice([-1.0, 1.0], size=count).astype(np.float32)
                 for k in range(count):
-                    p = int(pos[k])
-                    a = amp[k] * sign[k]
-                    noise[p, 0] += a
-                    noise[p, 1] += a * float(self.rng.random() * 0.8 + 0.2)
-                    noise[p + 1] -= a * 0.5
+                    self._add_click(noise, int(pos[k]), float(amp[k] * sign[k]), n)
         if self.period:
             first = (-self._t) % self.period
             for p in range(int(first), n, self.period):
                 if p + 2 < n:
-                    noise[p] += 0.05 * self.crackle
-                    noise[p + 1] -= 0.03 * self.crackle
+                    self._add_click(noise, p, 0.03 * self.crackle, n)
         self._t += n
         return self._hp.process(self._lp.process(noise))
 
