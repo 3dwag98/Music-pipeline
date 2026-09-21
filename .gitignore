@@ -1,0 +1,12 @@
+runs/
+.venv/
+__pycache__/
+*.pyc
+*.wav
+*.mp3
+*.flac
+*.mp4
+*.tmp
+analysis.json
+.env
+.env.bak

@@ -1,0 +1,1105 @@
+{
+  "defaults": {
+    "duration": 150,
+    "inference_steps": 8,
+    "time_signature": "4",
+    "lyrics": ""
+  },
+  "genres": {
+    "lofi": {
+      "base": "lofi hip hop instrumental, no vocals",
+      "bpm": [
+        70,
+        86
+      ],
+      "keys": [
+        "C Major",
+        "F Major",
+        "G Major",
+        "Bb Major",
+        "A Minor",
+        "D Minor",
+        "E Minor",
+        "C Minor"
+      ],
+      "pools": {
+        "lead": [
+          "mellow Rhodes electric piano chords",
+          "jazzy nylon-string guitar",
+          "soft muted trumpet melody",
+          "warm detuned upright piano",
+          "dreamy vibraphone",
+          "gentle kalimba melody"
+        ],
+        "drums": [
+          "dusty boom-bap drums",
+          "laid-back swung hip hop beat",
+          "soft kick and snappy rimshot",
+          "lazy off-grid drums with shaker"
+        ],
+        "bass": [
+          "warm round sub bass",
+          "mellow upright bass",
+          "soft Moog-style bass"
+        ],
+        "texture": [
+          "vinyl crackle",
+          "tape hiss and wow",
+          "soft rain in the background",
+          "cassette saturation",
+          "distant city ambience"
+        ],
+        "vibe": [
+          "chill late-night study mood",
+          "cozy evening vibe",
+          "nostalgic and warm",
+          "relaxed Sunday afternoon feel"
+        ]
+      },
+      "title_words": {
+        "adj": [
+          "Amber",
+          "Sleepy",
+          "Velvet",
+          "Dusty",
+          "Midnight",
+          "Hazy",
+          "Faded",
+          "Quiet",
+          "Golden",
+          "Rainy",
+          "Soft",
+          "Lazy"
+        ],
+        "noun": [
+          "Streetlights",
+          "Window",
+          "Cassette",
+          "Rooftop",
+          "Notebook",
+          "Tea",
+          "Train",
+          "Balcony",
+          "Polaroid",
+          "Evening",
+          "Clouds",
+          "Alley"
+        ]
+      }
+    },
+    "jazz": {
+      "base": "smooth jazz instrumental, no vocals, live small-combo feel",
+      "bpm": [
+        80,
+        120
+      ],
+      "keys": [
+        "F Major",
+        "Bb Major",
+        "Eb Major",
+        "C Major",
+        "D Minor",
+        "G Minor",
+        "C Minor"
+      ],
+      "pools": {
+        "lead": [
+          "warm tenor saxophone melody",
+          "muted trumpet lead",
+          "jazz guitar with clean tone",
+          "expressive grand piano solo",
+          "vibraphone melody"
+        ],
+        "drums": [
+          "brushed drum kit with light swing",
+          "ride cymbal swing groove",
+          "soft bossa nova drums"
+        ],
+        "bass": [
+          "walking upright bass",
+          "round fretless bass"
+        ],
+        "texture": [
+          "intimate club room ambience",
+          "warm analog recording",
+          "tasteful room reverb"
+        ],
+        "vibe": [
+          "late-night lounge atmosphere",
+          "elegant dinner jazz",
+          "relaxed coffee shop mood",
+          "rainy city evening"
+        ]
+      },
+      "title_words": {
+        "adj": [
+          "Blue",
+          "Smoky",
+          "Velvet",
+          "Late",
+          "Silver",
+          "Crimson",
+          "Moonlit",
+          "Easy",
+          "Mellow",
+          "Uptown"
+        ],
+        "noun": [
+          "Lounge",
+          "Avenue",
+          "Martini",
+          "Corner",
+          "Nocturne",
+          "Boulevard",
+          "Serenade",
+          "Promenade",
+          "Hour",
+          "Harbor"
+        ]
+      }
+    },
+    "piano": {
+      "base": "solo piano instrumental, no vocals, intimate close-mic recording",
+      "bpm": [
+        60,
+        90
+      ],
+      "keys": [
+        "C Major",
+        "G Major",
+        "D Major",
+        "F Major",
+        "A Minor",
+        "E Minor",
+        "B Minor",
+        "D Minor"
+      ],
+      "pools": {
+        "lead": [
+          "felt piano with soft hammers",
+          "warm grand piano",
+          "gentle upright piano"
+        ],
+        "drums": [
+          "no drums"
+        ],
+        "bass": [
+          "deep left-hand bass notes"
+        ],
+        "texture": [
+          "subtle pedal noise",
+          "soft room reverb",
+          "light tape warmth"
+        ],
+        "vibe": [
+          "reflective and emotional",
+          "calm and minimal",
+          "cinematic and tender",
+          "peaceful morning mood"
+        ]
+      },
+      "title_words": {
+        "adj": [
+          "Still",
+          "Paper",
+          "Quiet",
+          "Winter",
+          "Morning",
+          "Distant",
+          "Tender",
+          "Fading",
+          "Open",
+          "Gentle"
+        ],
+        "noun": [
+          "Letters",
+          "Light",
+          "Snow",
+          "Rooms",
+          "Memory",
+          "River",
+          "Tides",
+          "Garden",
+          "Hours",
+          "Keys"
+        ]
+      }
+    },
+    "ambient": {
+      "base": "ambient instrumental, no vocals, slow evolving soundscape",
+      "bpm": [
+        55,
+        70
+      ],
+      "keys": [
+        "C Major",
+        "D Major",
+        "F Major",
+        "A Minor",
+        "E Minor"
+      ],
+      "pools": {
+        "lead": [
+          "soft evolving synth pads",
+          "glassy ambient piano",
+          "airy bowed textures",
+          "warm drone"
+        ],
+        "drums": [
+          "no drums"
+        ],
+        "bass": [
+          "deep sustained sub bass"
+        ],
+        "texture": [
+          "gentle ocean waves",
+          "soft wind",
+          "light rain",
+          "distant birds"
+        ],
+        "vibe": [
+          "deep sleep and relaxation",
+          "meditative calm",
+          "floating and spacious"
+        ]
+      },
+      "title_words": {
+        "adj": [
+          "Endless",
+          "Drifting",
+          "Silent",
+          "Weightless",
+          "Deep",
+          "Slow",
+          "Pale",
+          "Soft"
+        ],
+        "noun": [
+          "Horizon",
+          "Tide",
+          "Nebula",
+          "Mist",
+          "Ocean",
+          "Sky",
+          "Breath",
+          "Dunes"
+        ]
+      }
+    },
+    "devotional": {
+      "base": "Indian devotional instrumental, no vocals",
+      "bpm": [
+        60,
+        80
+      ],
+      "keys": [
+        "C Major",
+        "D Major",
+        "G Major",
+        "A Minor",
+        "D Minor"
+      ],
+      "pools": {
+        "lead": [
+          "bansuri flute melody",
+          "sitar melody",
+          "santoor melody",
+          "harmonium melody"
+        ],
+        "drums": [
+          "soft tabla",
+          "gentle dholak",
+          "light manjira and tabla"
+        ],
+        "bass": [
+          "tanpura drone"
+        ],
+        "texture": [
+          "temple bell ambience",
+          "soft reverb",
+          "morning ambience"
+        ],
+        "vibe": [
+          "peaceful and prayerful",
+          "serene morning aarti mood",
+          "meditative and sacred"
+        ]
+      },
+      "title_words": {
+        "adj": [
+          "Sacred",
+          "Morning",
+          "Golden",
+          "Peaceful",
+          "Eternal",
+          "Gentle",
+          "Divine",
+          "Serene"
+        ],
+        "noun": [
+          "Aarti",
+          "Diya",
+          "Ghats",
+          "Lotus",
+          "Prayer",
+          "Temple",
+          "Dawn",
+          "Ganga"
+        ]
+      }
+    }
+  },
+  "moods": {
+    "calm": {
+      "words": "calm, relaxed, peaceful",
+      "bpm_shift": -4
+    },
+    "sad": {
+      "words": "melancholic, bittersweet, introspective",
+      "bpm_shift": -6,
+      "prefer_minor": true
+    },
+    "happy": {
+      "words": "uplifting, warm, bright and optimistic",
+      "bpm_shift": 6,
+      "prefer_major": true
+    },
+    "focus": {
+      "words": "steady, unobtrusive, good for studying and focus",
+      "bpm_shift": 0
+    },
+    "sleepy": {
+      "words": "very slow, soft dynamics, sleepy and soothing",
+      "bpm_shift": -10
+    },
+    "rainy": {
+      "words": "rainy night, introspective, soft rain in background",
+      "bpm_shift": -4,
+      "prefer_minor": true
+    },
+    "romantic": {
+      "words": "romantic, tender, intimate",
+      "bpm_shift": -2,
+      "prefer_major": true
+    },
+    "nostalgic": {
+      "words": "nostalgic, dreamy, bittersweet memories",
+      "bpm_shift": -2
+    },
+    "energetic": {
+      "words": "energetic, groovy, lively",
+      "bpm_shift": 12,
+      "prefer_major": true
+    }
+  },
+  "engine": {
+    "_note": "Styles for the built-in engine ('pipeline.py lofi --style NAME'). Lists are choices picked per track; single values are fixed. Copy a block, rename it, and it is available immediately.",
+    "defaults": {
+      "bpm": [
+        70,
+        86
+      ],
+      "keys": [
+        "A Minor",
+        "D Minor",
+        "E Minor",
+        "C Minor",
+        "F Minor",
+        "G Minor",
+        "B Minor",
+        "F# Minor",
+        "C Major",
+        "F Major",
+        "G Major",
+        "Bb Major",
+        "Eb Major",
+        "D Major",
+        "A Major"
+      ],
+      "swing": 0.16,
+      "vinyl": 1.0,
+      "tape": 1.0,
+      "reverb": 0.35,
+      "richness": 0.85,
+      "lead_density": 0.5,
+      "bars_per_loop": 4,
+      "chord_instrument": "rhodes",
+      "lead_instrument": "vibraphone",
+      "bass_instrument": "sub_bass",
+      "pad_instrument": "pad",
+      "drum_style": "dusty",
+      "drum_pattern": "boom_bap",
+      "title_words": {
+        "adj": [
+          "Amber",
+          "Sleepy",
+          "Velvet",
+          "Dusty",
+          "Midnight",
+          "Hazy",
+          "Faded",
+          "Quiet",
+          "Golden",
+          "Rainy",
+          "Soft",
+          "Lazy",
+          "Paper",
+          "Muted",
+          "Slow",
+          "Warm"
+        ],
+        "noun": [
+          "Streetlights",
+          "Window",
+          "Cassette",
+          "Rooftop",
+          "Notebook",
+          "Tea",
+          "Train",
+          "Balcony",
+          "Polaroid",
+          "Evening",
+          "Clouds",
+          "Alley",
+          "Bookshop",
+          "Laundry",
+          "Bicycle",
+          "Static"
+        ]
+      }
+    },
+    "instruments": [
+      "rhodes",
+      "felt_piano",
+      "nylon_guitar",
+      "vibraphone",
+      "kalimba",
+      "muted_trumpet",
+      "pad",
+      "sub_bass",
+      "upright_bass",
+      "bansuri"
+    ],
+    "drum_patterns": [
+      "boom_bap",
+      "lazy",
+      "halftime",
+      "swing",
+      "shuffle",
+      "brushed",
+      "tabla",
+      "none"
+    ],
+    "drum_styles": [
+      "dusty",
+      "soft",
+      "punchy",
+      "brush"
+    ],
+    "styles": {
+      "lofi": {
+        "bpm": [
+          70,
+          86
+        ],
+        "keys": [
+          "A Minor",
+          "D Minor",
+          "E Minor",
+          "C Minor",
+          "F Minor",
+          "G Minor",
+          "B Minor",
+          "F# Minor",
+          "C Major",
+          "F Major",
+          "G Major",
+          "Bb Major",
+          "D Dorian",
+          "A Dorian",
+          "G Dorian"
+        ],
+        "chord_instrument": [
+          "rhodes",
+          "rhodes",
+          "felt_piano",
+          "nylon_guitar"
+        ],
+        "lead_instrument": [
+          "vibraphone",
+          "kalimba",
+          "muted_trumpet",
+          "nylon_guitar"
+        ],
+        "bass_instrument": [
+          "sub_bass",
+          "upright_bass"
+        ],
+        "drum_style": [
+          "dusty",
+          "soft"
+        ],
+        "drum_pattern": [
+          "boom_bap",
+          "lazy",
+          "shuffle"
+        ],
+        "vinyl": 1.0,
+        "tape": 1.0,
+        "reverb": 0.35,
+        "swing": 0.16,
+        "lead_density": 0.55,
+        "richness": 0.85,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Amber",
+            "Sleepy",
+            "Velvet",
+            "Dusty",
+            "Midnight",
+            "Hazy",
+            "Faded",
+            "Quiet",
+            "Golden",
+            "Rainy",
+            "Soft",
+            "Lazy",
+            "Paper",
+            "Muted",
+            "Slow",
+            "Warm"
+          ],
+          "noun": [
+            "Streetlights",
+            "Window",
+            "Cassette",
+            "Rooftop",
+            "Notebook",
+            "Tea",
+            "Train",
+            "Balcony",
+            "Polaroid",
+            "Evening",
+            "Clouds",
+            "Alley",
+            "Bookshop",
+            "Laundry",
+            "Bicycle",
+            "Static"
+          ]
+        }
+      },
+      "study": {
+        "bpm": [
+          72,
+          84
+        ],
+        "keys": [
+          "C Major",
+          "F Major",
+          "G Major",
+          "Bb Major",
+          "Eb Major",
+          "D Major",
+          "A Major",
+          "D Dorian",
+          "A Dorian",
+          "A Minor",
+          "E Minor"
+        ],
+        "chord_instrument": [
+          "rhodes",
+          "felt_piano"
+        ],
+        "lead_instrument": [
+          "vibraphone",
+          "kalimba"
+        ],
+        "bass_instrument": [
+          "sub_bass"
+        ],
+        "drum_style": [
+          "soft"
+        ],
+        "drum_pattern": [
+          "lazy",
+          "boom_bap"
+        ],
+        "vinyl": 0.6,
+        "tape": 0.8,
+        "reverb": 0.3,
+        "swing": 0.12,
+        "lead_density": 0.3,
+        "richness": 0.7,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Focused",
+            "Steady",
+            "Plain",
+            "Long",
+            "Blue",
+            "Open",
+            "Still",
+            "Late"
+          ],
+          "noun": [
+            "Chapter",
+            "Desk",
+            "Margins",
+            "Library",
+            "Notes",
+            "Hours",
+            "Lamp",
+            "Pages"
+          ]
+        },
+        "_note": "deliberately unobtrusive: sparse melody, softer kit, less crackle"
+      },
+      "sleep": {
+        "bpm": [
+          58,
+          68
+        ],
+        "keys": [
+          "A Minor",
+          "D Minor",
+          "E Minor",
+          "C Minor",
+          "C Major",
+          "F Major",
+          "G Major"
+        ],
+        "chord_instrument": [
+          "felt_piano",
+          "rhodes"
+        ],
+        "lead_instrument": [
+          "vibraphone",
+          "bansuri"
+        ],
+        "bass_instrument": [
+          "sub_bass"
+        ],
+        "drum_style": [
+          "brush"
+        ],
+        "drum_pattern": [
+          "halftime",
+          "none"
+        ],
+        "vinyl": 0.5,
+        "tape": 0.9,
+        "reverb": 0.62,
+        "swing": 0.08,
+        "lead_density": 0.22,
+        "richness": 0.6,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Drifting",
+            "Weightless",
+            "Dim",
+            "Distant",
+            "Silent",
+            "Slow",
+            "Pale",
+            "Deep"
+          ],
+          "noun": [
+            "Tide",
+            "Ceiling",
+            "Snowfall",
+            "Harbour",
+            "Breath",
+            "Dusk",
+            "Moss",
+            "Lull"
+          ]
+        }
+      },
+      "jazzhop": {
+        "bpm": [
+          80,
+          95
+        ],
+        "keys": [
+          "F Major",
+          "Bb Major",
+          "Eb Major",
+          "C Major",
+          "D Minor",
+          "G Minor",
+          "C Minor",
+          "A Minor"
+        ],
+        "chord_instrument": [
+          "rhodes",
+          "felt_piano",
+          "nylon_guitar"
+        ],
+        "lead_instrument": [
+          "muted_trumpet",
+          "vibraphone",
+          "nylon_guitar"
+        ],
+        "bass_instrument": [
+          "upright_bass"
+        ],
+        "drum_style": [
+          "brush",
+          "dusty"
+        ],
+        "drum_pattern": [
+          "swing",
+          "brushed",
+          "shuffle"
+        ],
+        "vinyl": 0.8,
+        "tape": 0.9,
+        "reverb": 0.42,
+        "swing": 0.28,
+        "lead_density": 0.7,
+        "richness": 1.0,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Smoky",
+            "Blue",
+            "Uptown",
+            "Crimson",
+            "Mellow",
+            "Easy",
+            "Late",
+            "Silver"
+          ],
+          "noun": [
+            "Lounge",
+            "Avenue",
+            "Corner",
+            "Nocturne",
+            "Martini",
+            "Brownstone",
+            "Hour",
+            "Stoop"
+          ]
+        }
+      },
+      "boombap": {
+        "bpm": [
+          84,
+          94
+        ],
+        "keys": [
+          "A Minor",
+          "D Minor",
+          "E Minor",
+          "C Minor",
+          "F Minor",
+          "G Minor"
+        ],
+        "chord_instrument": [
+          "rhodes",
+          "felt_piano"
+        ],
+        "lead_instrument": [
+          "muted_trumpet",
+          "vibraphone"
+        ],
+        "bass_instrument": [
+          "sub_bass",
+          "upright_bass"
+        ],
+        "drum_style": [
+          "punchy",
+          "dusty"
+        ],
+        "drum_pattern": [
+          "boom_bap",
+          "shuffle"
+        ],
+        "vinyl": 1.3,
+        "tape": 1.0,
+        "reverb": 0.28,
+        "swing": 0.2,
+        "lead_density": 0.45,
+        "richness": 0.8,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Dusty",
+            "Cracked",
+            "Heavy",
+            "Grey",
+            "Basement",
+            "Worn",
+            "Broken",
+            "Iron"
+          ],
+          "noun": [
+            "Crate",
+            "Sampler",
+            "Stairwell",
+            "Payphone",
+            "Boombox",
+            "Sidewalk",
+            "Loop",
+            "Tape"
+          ]
+        }
+      },
+      "rainy": {
+        "bpm": [
+          66,
+          78
+        ],
+        "keys": [
+          "A Minor",
+          "D Minor",
+          "E Minor",
+          "C Minor",
+          "F Minor",
+          "G Minor",
+          "B Minor",
+          "F# Minor",
+          "F Dorian",
+          "D Dorian"
+        ],
+        "chord_instrument": [
+          "felt_piano",
+          "rhodes"
+        ],
+        "lead_instrument": [
+          "vibraphone",
+          "kalimba",
+          "bansuri"
+        ],
+        "bass_instrument": [
+          "sub_bass"
+        ],
+        "drum_style": [
+          "soft",
+          "brush"
+        ],
+        "drum_pattern": [
+          "lazy",
+          "halftime"
+        ],
+        "vinyl": 1.1,
+        "tape": 1.1,
+        "reverb": 0.55,
+        "swing": 0.14,
+        "lead_density": 0.38,
+        "richness": 0.85,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Rainy",
+            "Grey",
+            "Wet",
+            "Drenched",
+            "Overcast",
+            "Quiet",
+            "Foggy",
+            "Cold"
+          ],
+          "noun": [
+            "Window",
+            "Bus Stop",
+            "Gutter",
+            "Umbrella",
+            "Puddle",
+            "Awning",
+            "Platform",
+            "Kerb"
+          ]
+        }
+      },
+      "piano": {
+        "bpm": [
+          60,
+          76
+        ],
+        "keys": [
+          "C Major",
+          "F Major",
+          "G Major",
+          "Bb Major",
+          "Eb Major",
+          "D Major",
+          "A Major",
+          "A Minor",
+          "D Minor",
+          "E Minor",
+          "C Minor",
+          "F Minor"
+        ],
+        "chord_instrument": [
+          "felt_piano"
+        ],
+        "lead_instrument": [
+          "felt_piano"
+        ],
+        "bass_instrument": [
+          "sub_bass"
+        ],
+        "drum_style": [
+          "brush"
+        ],
+        "drum_pattern": [
+          "none"
+        ],
+        "vinyl": 0.35,
+        "tape": 0.6,
+        "reverb": 0.6,
+        "swing": 0.0,
+        "lead_density": 0.5,
+        "richness": 0.75,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Still",
+            "Paper",
+            "Winter",
+            "Morning",
+            "Distant",
+            "Tender",
+            "Fading",
+            "Gentle"
+          ],
+          "noun": [
+            "Letters",
+            "Light",
+            "Snow",
+            "Rooms",
+            "Memory",
+            "River",
+            "Garden",
+            "Keys"
+          ]
+        }
+      },
+      "ambient": {
+        "bpm": [
+          56,
+          66
+        ],
+        "keys": [
+          "C Major",
+          "D Major",
+          "F Major",
+          "A Minor",
+          "E Minor",
+          "C Lydian"
+        ],
+        "chord_instrument": [
+          "pad"
+        ],
+        "lead_instrument": [
+          "vibraphone",
+          "bansuri"
+        ],
+        "bass_instrument": [
+          "sub_bass"
+        ],
+        "drum_style": [
+          "brush"
+        ],
+        "drum_pattern": [
+          "none"
+        ],
+        "vinyl": 0.3,
+        "tape": 0.7,
+        "reverb": 0.85,
+        "swing": 0.0,
+        "lead_density": 0.18,
+        "richness": 0.55,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Endless",
+            "Drifting",
+            "Silent",
+            "Weightless",
+            "Deep",
+            "Slow",
+            "Pale",
+            "Soft"
+          ],
+          "noun": [
+            "Horizon",
+            "Tide",
+            "Nebula",
+            "Mist",
+            "Ocean",
+            "Sky",
+            "Breath",
+            "Dunes"
+          ]
+        }
+      },
+      "devotional": {
+        "bpm": [
+          62,
+          78
+        ],
+        "keys": [
+          "C Major",
+          "D Major",
+          "G Major",
+          "A Minor",
+          "D Minor",
+          "D Dorian"
+        ],
+        "chord_instrument": [
+          "felt_piano",
+          "nylon_guitar"
+        ],
+        "lead_instrument": [
+          "bansuri",
+          "kalimba"
+        ],
+        "bass_instrument": [
+          "sub_bass"
+        ],
+        "drum_style": [
+          "soft"
+        ],
+        "drum_pattern": [
+          "tabla",
+          "none"
+        ],
+        "vinyl": 0.3,
+        "tape": 0.6,
+        "reverb": 0.6,
+        "swing": 0.05,
+        "lead_density": 0.5,
+        "richness": 0.6,
+        "bars_per_loop": 4,
+        "title_words": {
+          "adj": [
+            "Sacred",
+            "Morning",
+            "Golden",
+            "Peaceful",
+            "Eternal",
+            "Gentle",
+            "Divine",
+            "Serene"
+          ],
+          "noun": [
+            "Aarti",
+            "Diya",
+            "Ghats",
+            "Lotus",
+            "Prayer",
+            "Temple",
+            "Dawn",
+            "Ganga"
+          ]
+        }
+      }
+    }
+  }
+}

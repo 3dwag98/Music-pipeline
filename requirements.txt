@@ -1,0 +1,15 @@
+# Core - everything the built-in engine, mastering, song builder and checks need.
+numpy>=1.24
+scipy>=1.10
+soundfile>=0.12
+pyloudnorm>=0.1.1
+
+# Only for the ACE-Step backend ("pipeline.py generate").
+requests>=2.28
+
+# Optional extras:
+#   numba       compiles the envelope followers - mastering roughly 2x faster
+#   librosa     a second opinion on tempo/key in "analyze"
+#   transformers, torch   only for "analyze --clap" mood tags (large download)
+# pip install numba
+# pip install librosa
