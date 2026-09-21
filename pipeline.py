@@ -222,6 +222,9 @@ def build_track_spec(presets, genre, mood, rng, used_titles, bpm=None, key=None,
 def cmd_generate(args):
     from mpipe.acestep import LOW_VRAM_REQUEST, AceStepClient, is_oom
 
+    if getattr(args, "backend", "server") == "comfy":
+        return cmd_generate_comfy(args)
+
     presets = load_presets(args.presets)
     if args.reference and not Path(args.reference).is_file():
         die(f"reference file not found: {args.reference}")
@@ -315,6 +318,167 @@ def cmd_generate(args):
     log(f"\nDone: {ok}/{args.count} tracks in {run / 'raw'}")
     if ok == 0:
         die("nothing was generated - check the ACE-Step server window for errors")
+    return run
+
+
+# ---------------------------------------------------------------------------
+# ComfyUI: art (the visual) and audio (ACE-Step through ComfyUI)
+# ---------------------------------------------------------------------------
+
+def _comfy_client(args):
+    from mpipe.comfy import ComfyClient
+    client = ComfyClient(args.comfy_url)
+    client.health()
+    return client
+
+
+def _check_checkpoint(client, graph):
+    """Fail early and usefully when the workflow names a model ComfyUI lacks."""
+    from mpipe.comfy import find_nodes
+    available = client.checkpoints()
+    if not available:
+        return
+    for nid in find_nodes(graph, "CheckpointLoaderSimple"):
+        want = graph[nid].get("inputs", {}).get("ckpt_name")
+        if want and want not in available:
+            die(f"ComfyUI has no checkpoint called '{want}'.\n"
+                f"       It can see: {', '.join(available[:12])}"
+                f"{' ...' if len(available) > 12 else ''}\n"
+                f"       Pick one with:  --set CHECKPOINT.ckpt_name=<name>")
+
+
+def cmd_art(args):
+    from mpipe.comfy import (apply_settings, describe_workflow, load_workflow)
+    from mpipe.video import make_loop
+
+    graph = load_workflow(args.workflow)
+    if args.show_workflow:
+        log(f"{args.workflow}: {len(graph)} nodes\n")
+        log("\n".join(describe_workflow(graph)))
+        log("\nPatch any of these with --set NODE.FIELD=VALUE")
+        return None
+
+    run = resolve_run(args.run) if args.run else new_run("art")
+    out_dir = run / "art"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    client = _comfy_client(args)
+    log(f"ComfyUI: {client.describe()}")
+
+    seed = args.seed if args.seed is not None else random.randrange(2 ** 31)
+    width, height = _parse_size(args.size)
+    made = []
+    for i in range(1, args.count + 1):
+        work = json.loads(json.dumps(graph))
+        applied = apply_settings(
+            work, prompt=args.prompt, negative=args.negative,
+            seed=seed + i - 1, steps=args.steps, cfg=args.cfg,
+            width=width, height=height, filename=f"lofi_art_{i:02d}",
+            overrides=args.set)
+        if args.prompt and not applied.get("prompt"):
+            warn("could not find a prompt node to patch - "
+                 "title one POSITIVE, or use --set")
+        if i == 1:
+            _check_checkpoint(client, work)
+        log(f"[{i}/{args.count}] seed {seed + i - 1}  {width}x{height}")
+        stem = out_dir / f"art_{i:02d}"
+        try:
+            paths = client.run(work, stem, want="image", timeout=args.task_timeout)
+        except KeyboardInterrupt:
+            die("stopped by user")
+        for path in paths:
+            log(f"    {path.name}")
+            made.append(path)
+
+    if not made:
+        die("ComfyUI returned no images")
+    if args.loop_seconds:
+        source = made[0]
+        loop = run / "loop.mp4"
+        make_loop(source, loop, seconds=args.loop_seconds, size=args.size,
+                  fps=args.fps or 30, zoom=args.zoom, nvenc=args.nvenc,
+                  dry_run=args.dry_run)
+        log(f"\nSeamless loop: {loop}")
+        log(f"Next:  python pipeline.py video --loop \"{loop}\"")
+    else:
+        log(f"\nNext:  python pipeline.py video --image \"{made[0]}\"")
+    return run
+
+
+def _parse_size(size):
+    try:
+        width, height = (int(v) for v in str(size).lower().split("x"))
+        return width, height
+    except ValueError:
+        die(f"--size must look like 1920x1080, got: {size}")
+
+
+def cmd_generate_comfy(args):
+    """Generate tracks through ComfyUI instead of the standalone ACE-Step server."""
+    from mpipe.comfy import apply_settings, load_workflow
+
+    presets = load_presets(args.presets)
+    graph = load_workflow(args.workflow or "acestep")
+    client = _comfy_client(args)
+    log(f"ComfyUI: {client.describe()}")
+
+    seed = args.seed if args.seed is not None else random.randrange(2 ** 31)
+    rng = random.Random(seed)
+    run = Path(args.run) if args.run else new_run(f"comfy_{args.genre}")
+    (run / "raw").mkdir(parents=True, exist_ok=True)
+    manifest = read_manifest(run)
+    manifest.update({"created": datetime.now().isoformat(timespec="seconds"),
+                     "engine": "ace-step", "backend": "comfyui",
+                     "version": __version__, "genre": args.genre, "mood": args.mood,
+                     "run_seed": seed, "server": args.comfy_url,
+                     "workflow": str(args.workflow or "acestep")})
+    manifest.setdefault("tracks", [])
+    write_manifest(run, manifest)
+    log(f"Run folder: {run}")
+
+    used, ok = set(), 0
+    for i in range(1, args.count + 1):
+        spec = build_track_spec(presets, args.genre, args.mood, rng, used,
+                                bpm=args.bpm, key=args.key, duration=args.duration,
+                                extra=args.extra)
+        tags = f"{spec['caption']}, {spec['bpm']} bpm, {spec['key_scale']}"
+        work = json.loads(json.dumps(graph))
+        applied = apply_settings(work, prompt=tags, seed=spec["seed"],
+                                 steps=args.steps, cfg=args.cfg,
+                                 seconds=spec["duration"],
+                                 lyrics=spec["lyrics"] or "",
+                                 filename=f"track_{i:02d}", overrides=args.set)
+        if not applied.get("prompt"):
+            die("could not find a prompt node in the workflow - "
+                "title one POSITIVE, or use --set")
+        if i == 1:
+            _check_checkpoint(client, work)
+        log(f"\n[{i}/{args.count}] {spec['title']}  |  {spec['bpm']} BPM, "
+            f"{spec['key_scale']}, {int(spec['duration'])}s")
+        log(f"    {spec['caption']}")
+        stem = run / "raw" / f"{i:02d}_{slug(spec['title'])}"
+        entry = dict(spec, index=i, file=None, status="failed")
+        import time
+        for attempt in range(args.retries + 1):
+            try:
+                t0 = time.time()
+                paths = client.run(work, stem, want="audio", timeout=args.task_timeout)
+                entry.update(file=paths[0].name, status="ok",
+                             seconds=round(time.time() - t0, 1))
+                log(f"    saved {paths[0].name} in {entry['seconds']}s")
+                ok += 1
+                break
+            except KeyboardInterrupt:
+                write_manifest(run, manifest)
+                die("stopped by user (finished tracks are kept)")
+            except Exception as exc:
+                entry["error"] = str(exc)
+                log(f"    attempt {attempt + 1} failed: {exc}")
+        manifest["tracks"].append(entry)
+        write_manifest(run, manifest)
+
+    log(f"\nDone: {ok}/{args.count} tracks in {run / 'raw'}")
+    if ok == 0:
+        die("nothing was generated - check the ComfyUI window for errors")
     return run
 
 
@@ -789,11 +953,43 @@ def add_generate_args(p):
     p.add_argument("--i-own-this", action="store_true",
                    help="confirm you hold the rights to --reference (required for cover mode)")
     p.add_argument("--model", help="ACE-Step DiT model name")
+    p.add_argument("--backend", choices=["server", "comfy"], default="server",
+                   help="the standalone ACE-Step API, or ComfyUI")
     p.add_argument("--server", default="http://127.0.0.1:8001")
     p.add_argument("--api-key")
     p.add_argument("--presets", default=str(DEFAULT_PRESETS))
     p.add_argument("--retries", type=int, default=1)
+
+
+def add_comfy_args(p):
+    p.add_argument("--comfy-url", default="http://127.0.0.1:8188",
+                   help="ComfyUI address")
+    p.add_argument("--workflow", help="API-format workflow JSON "
+                                      "(name in workflows/, or a path)")
+    p.add_argument("--set", action="append", default=[], metavar="NODE.FIELD=VALUE",
+                   help="patch any workflow input; NODE is a title, class or id")
+    p.add_argument("--steps", type=int, help="sampler steps")
+    p.add_argument("--cfg", type=float, help="sampler guidance")
     p.add_argument("--task-timeout", type=int, default=1800)
+
+
+def add_art_args(p):
+    p.add_argument("--prompt", default="cozy lofi study room at night, warm desk lamp, "
+                                       "rain on the window, plants, soft anime "
+                                       "illustration, muted colours, grain",
+                   help="what the artwork should show")
+    p.add_argument("--negative", help="what to keep out of it")
+    p.add_argument("--count", type=int, default=1, help="how many images")
+    p.add_argument("--size", default="1920x1080", help="loop resolution, e.g. 1920x1080")
+    p.add_argument("--seed", type=int)
+    p.add_argument("--loop-seconds", type=float, default=40.0,
+                   help="length of the seamless loop to build (0 = image only)")
+    p.add_argument("--zoom", type=float, default=0.12, help="how far the loop drifts in")
+    p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--nvenc", action="store_true", help="GPU-encode the loop")
+    p.add_argument("--dry-run", action="store_true", help="print the ffmpeg command only")
+    p.add_argument("--show-workflow", action="store_true",
+                   help="list the workflow's nodes and patchable fields, then exit")
 
 
 def add_master_args(p):
@@ -885,6 +1081,13 @@ def add_all_args(p):
     p.add_argument("--api-key")
     p.add_argument("--retries", type=int, default=1)
     p.add_argument("--task-timeout", type=int, default=1800)
+    p.add_argument("--backend", choices=["server", "comfy"], default="server",
+                   help="ACE-Step via its own API, or via ComfyUI")
+    p.add_argument("--comfy-url", default="http://127.0.0.1:8188")
+    p.add_argument("--workflow")
+    p.add_argument("--set", action="append", default=[], metavar="NODE.FIELD=VALUE")
+    p.add_argument("--steps", type=int)
+    p.add_argument("--cfg", type=float)
     # --- shared musical settings ---
     p.add_argument("--bpm", type=float, help="force the tempo everywhere")
     p.add_argument("--key", help='force the key, e.g. "A Minor"')
@@ -939,8 +1142,11 @@ def main(argv=None):
     p = sub.add_parser("doctor", help="check this PC and write tuned ACE-Step settings")
     p.add_argument("--write-env", nargs="?", const=".env", default=None,
                    help="write low-VRAM settings to an ACE-Step .env file")
+    p.add_argument("--comfy-url", default="http://127.0.0.1:8188",
+                   help="where to look for ComfyUI")
     p.set_defaults(func=lambda a: (__import__("mpipe.doctor", fromlist=["check"])
-                                   .check(write_env=a.write_env), None)[1])
+                                   .check(write_env=a.write_env,
+                                          comfy_url=a.comfy_url), None)[1])
 
     p = sub.add_parser("lofi", help="generate tracks with the built-in engine (no GPU)")
     add_common(p)
@@ -950,7 +1156,14 @@ def main(argv=None):
     p = sub.add_parser("generate", help="generate tracks with ACE-Step (needs the GPU)")
     add_common(p)
     add_generate_args(p)
+    add_comfy_args(p)
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("art", help="make the cover art and a seamless video loop (ComfyUI)")
+    add_common(p)
+    add_art_args(p)
+    add_comfy_args(p)
+    p.set_defaults(func=cmd_art, workflow="art")
 
     p = sub.add_parser("master", help="trim, loudness-normalise and limit each track")
     add_common(p)

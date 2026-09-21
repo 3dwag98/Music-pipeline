@@ -24,7 +24,7 @@ from .drums import PATTERNS, DrumKit
 from .stretch import (analyze_file, fit_to_tempo, key_distance, pitch_shift,
                       semitones_to_key, time_stretch)
 from .theory import parse_key, key_name
-from .util import check_disk, fmt_time, log, warn
+from .util import check_disk, die, fmt_time, log, warn
 
 DEFAULT_SR = 44100
 
@@ -351,6 +351,21 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
         f"(order: {order}, crossfade: {crossfade_bars} bars)")
 
     bar_s = 60.0 / target_bpm * 4
+    # A transition needs the track to be at least twice its length, or there is
+    # no body left between the fade in and the fade out.  Shrink the crossfade
+    # to fit the shortest input rather than silently skipping every track.
+    shortest = min((t.get("duration") or 0.0) for t in tracks) or 0.0
+    if shortest > 0:
+        # Budget for what happens before the transition is cut: the track may be
+        # stretched shorter by up to max_stretch, the downbeat offset trims the
+        # head, and snapping to whole bars drops a partial bar at the tail.
+        usable = shortest * (1.0 - max_stretch / 100.0) - 2.0 * bar_s
+        max_bars = max(1, int(usable / (2.0 * bar_s))) if usable > 0 else 1
+        if crossfade_bars > max_bars:
+            warn(f"a {crossfade_bars}-bar crossfade needs tracks of about "
+                 f"{2 * crossfade_bars * bar_s + 2 * bar_s:.0f}s; the shortest here "
+                 f"is {shortest:.0f}s - using {max_bars} bar(s) instead")
+            crossfade_bars = max_bars
     cf_n = max(int(0.5 * sr), int(crossfade_bars * bar_s * sr))
     target_n = int(minutes * 60 * sr) if minutes else 0
     if target_n:
@@ -376,6 +391,7 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
     chapters, used, prev_tail, idx, repeats = [], [], None, 0, 0
     seen_titles = {}
     skipped = []
+    too_short = set()
     rng = random.Random(seed)
 
     def emit(block, spine_gain=1.0):
@@ -405,9 +421,21 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
                 continue
             x = snap_to_bars(x, sr, target_bpm, downbeat=info.get("downbeat", 0.0))
             if len(x) < cf_n * 2:
+                too_short.add(info["name"])
                 idx += 1
+                # without this guard a set of tracks that are all too short
+                # spins here forever, re-decoding and re-stretching every pass
+                if len(too_short) >= len(ordered):
+                    if not chapters:
+                        writer.close()
+                        die(f"every track is shorter than a {crossfade_bars}-bar "
+                            f"transition ({2 * cf_n / sr:.0f}s needed, shortest input "
+                            f"is {shortest:.0f}s).\n"
+                            f"       Use --crossfade-bars 1, or generate longer tracks.")
+                    break
                 continue
 
+            too_short.discard(info["name"])
             title = _title_for(info, titles, seen_titles)
             if notes.get("stretch_skipped"):
                 skipped.append(f"{info['name']} ({info.get('bpm', 0):.0f} BPM)")
@@ -470,6 +498,7 @@ def build_song(paths, out_path, minutes=0.0, sr=DEFAULT_SR, bpm=None, key=None,
         "lufs": round(meter.value(), 2), "chapters": chapters, "tracks": used,
         "spine": spine, "vinyl": vinyl,
         "not_beat_matched": sorted(set(skipped)),
+        "too_short": sorted(too_short),
     }
     if skipped:
         warn(f"left at their own tempo (too far from {target_bpm:.0f} BPM to stretch "
