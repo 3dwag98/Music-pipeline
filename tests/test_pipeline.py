@@ -548,12 +548,38 @@ def test_lofify(tmp):
     print(f"  (effects backend: {backend_name()})")
 
 
+def test_models_catalogue():
+    print("\nmodel catalogue")
+    from mpipe.models import BY_KEY, CATALOGUE, fits, report
+    check("catalogue is populated", len(CATALOGUE) >= 5, str(len(CATALOGUE)))
+    check("keys are unique", len(BY_KEY) == len(CATALOGUE))
+    for m in CATALOGUE:
+        check(f"{m.key} declares a commercial stance",
+              m.commercial in ("yes", "no", "conditional", "check"), m.commercial)
+        check(f"{m.key} has a licence", bool(m.licence))
+        check(f"{m.key} has a source url or is local",
+              bool(m.url) or m.key == "builtin")
+    # the point of the whole module: MusicGen's weights are non-commercial even
+    # though its code is MIT, and that is easy to miss
+    check("MusicGen flagged non-commercial", BY_KEY["musicgen"].commercial == "no")
+    check("ACE-Step flagged commercial-ok", BY_KEY["acestep"].commercial == "yes")
+    check("built-in engine needs no VRAM", BY_KEY["builtin"].min_vram_gb == 0)
+    check("YuE does not fit 6 GB", not fits(BY_KEY["yue"], 6.0))
+    check("ACE-Step fits 6 GB with offload", fits(BY_KEY["acestep"], 6.0))
+    check("ACE-Step does not fit 6 GB without offload",
+          not fits(BY_KEY["acestep"], 6.0, cpu_offload=False))
+    rows = report(vram_gb=6.0, commercial_only=True, verbose=False)
+    check("commercial-only filter drops MusicGen",
+          all(r["key"] != "musicgen" for r in rows), str([r["key"] for r in rows]))
+
+
 def test_cli():
     print("\ncli")
     import pipeline
     for args in (["--help"], ["lofi", "-h"], ["song", "-h"], ["all", "-h"],
                  ["check", "-h"], ["doctor", "-h"], ["art", "-h"],
-                 ["generate", "-h"], ["lofify", "-h"], ["mix", "-h"]):
+                 ["generate", "-h"], ["lofify", "-h"], ["mix", "-h"],
+                 ["models", "-h"]):
         try:
             pipeline.main(args)
         except SystemExit as exc:
@@ -574,6 +600,7 @@ def main():
         test_tags(tmp)
         test_lofify(tmp)
         test_fingerprint(tmp)
+        test_models_catalogue()
         test_comfy_workflows()
         test_comfy_roundtrip(tmp)
         test_video_loop(tmp)
