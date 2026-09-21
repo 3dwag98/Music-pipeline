@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +23,7 @@ import numpy as np
 import soundfile as sf
 
 from .audio import load_mono
-from .util import fmt_time, log, warn
+from .util import log, warn
 
 FP_SR = 11025
 FRAME = 1024

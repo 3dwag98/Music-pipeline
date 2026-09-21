@@ -314,7 +314,7 @@ def set_input(graph, selector, field, value, required=False, create=False):
 def set_where(graph, field, value, classes=None):
     """Patch `field` on every node that already has it (optionally class-filtered)."""
     changed = 0
-    for nid, node in graph.items():
+    for node in graph.values():
         if classes and node.get("class_type") not in classes:
             continue
         inputs = node.get("inputs", {})

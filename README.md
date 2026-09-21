@@ -202,6 +202,14 @@ torch and a few hundred MB of weights, and wants ~3 GB of VRAM — fine on your
 card, but slow on CPU. The pipeline detects it automatically and tells you which
 one it used.
 
+#### Before you upload lofify output
+
+YouTube's **"inauthentic content"** policy explicitly names *songs that are only
+pitch-shifted or sped up* — which is what `lofify` does by default. Raw lofify
+output is therefore not a finished upload: curate it, arrange it into a `song`,
+and put original visuals on it. `check` reminds you. Details in
+[`MONETIZATION.md`](MONETIZATION.md).
+
 #### Rights
 
 `lofify` refuses to run without `--i-own-this`. A lofi remix of someone else's
@@ -454,6 +462,10 @@ Measured after encoding to MP3 and decoding back: **−1.0 dBTP**, on the nose.
 ---
 
 ## 8. Before you upload — `check`
+
+> **Planning to earn from this?** [`MONETIZATION.md`](MONETIZATION.md) covers
+> which platforms accept this kind of output, which ones ban it outright, and
+> the one YouTube policy line that lands directly on `lofify`.
 
 ```bat
 python pipeline.py check --log

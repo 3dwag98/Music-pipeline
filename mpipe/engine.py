@@ -20,8 +20,7 @@ from . import dsp
 from .audio import StreamWriter
 from .drums import PATTERNS, DrumKit
 from .synth import NoteCache
-from .theory import (key_name, make_progression, melody_pool, midi_to_hz,
-                     parse_key, scale_degrees)
+from .theory import (key_name, make_progression, melody_pool, parse_key)
 from .util import fmt_time, log
 
 BEAT_UNITS = 16          # sixteenth-note grid
@@ -145,7 +144,8 @@ def make_motif(rng: random.Random, length=6):
         if rng.random() < 0.28:               # a rest keeps it from feeling mechanical
             pos += rng.choice([1, 2])
     contour = [rng.choice([-2, -1, 0, 0, 1, 1, 2, 3]) for _ in steps]
-    return list(zip([s for s, _ in steps], [d for _, d in steps], contour))
+    # strict=True documents (and enforces) that one contour move exists per step
+    return [(start, dur, move) for (start, dur), move in zip(steps, contour, strict=True)]
 
 
 def transform_motif(motif, rng: random.Random, mode=None):
@@ -373,8 +373,7 @@ class LofiChain:
 STEM_GAINS = {"drums": 0.95, "chords": 0.62, "bass": 0.80, "pad": 0.45, "lead": 0.52}
 
 
-def render_section(spec, section, events, chords, sr, cache, kit, tail_samples,
-                   carry=None):
+def render_section(spec, section, events, sr, cache, kit, tail_samples, carry=None):
     """Render one section into per-stem buffers.  Returns (stems, carry_tail)."""
     beat = 60.0 / spec.bpm
     bar_samples = int(round(beat * spec.beats_per_bar * sr))
@@ -416,7 +415,7 @@ def render_section(spec, section, events, chords, sr, cache, kit, tail_samples,
 
 
 def render_song(spec: SongSpec, out_path, minutes=3.0, sr=44100, progress=True,
-                stems_dir=None, target_lufs=-14.0, peak_db=-1.0, mp3_quality=320):
+                peak_db=-1.0, mp3_quality=320):
     """Compose and stream a complete song to `out_path`.  Returns a report dict."""
     rng = random.Random(spec.seed)
     root_pc, scale = parse_key(spec.key)
@@ -449,7 +448,7 @@ def render_song(spec: SongSpec, out_path, minutes=3.0, sr=44100, progress=True,
             events = build_events(spec, section, chords, motif, rng, root_pc, scale,
                                   bar_index=bar_cursor)
             chain.set_cutoff(section.cutoff)
-            body, carry, n = render_section(spec, section, events, chords, sr, cache,
+            body, carry, n = render_section(spec, section, events, sr, cache,
                                             kit, tail, carry)
             out = chain.process(body, n)
             if idx == 0:

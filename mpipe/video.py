@@ -7,13 +7,12 @@ the visual whenever possible: looping a short clip with `-c:v copy` turns a
 
 from __future__ import annotations
 
-import math
 import subprocess
 from pathlib import Path
 
 import soundfile as sf
 
-from .util import check_disk, die, find_ffmpeg, fmt_time, log, warn
+from .util import check_disk, die, find_ffmpeg, fmt_time, log
 
 
 def audio_duration(path):
@@ -23,7 +22,7 @@ def audio_duration(path):
 def build_video(audio, out, loop=None, image=None, nvenc=False, reencode=False,
                 watermark=None, wm_size=150, wm_opacity=0.85, wm_margin=24,
                 fps=None, crf=20, audio_bitrate="320k", dry_run=False,
-                metadata=None, chapters_file=None):
+                metadata=None):
     """ffmpeg command for the final upload.  Returns the path it wrote."""
     ff = find_ffmpeg(required=not dry_run) or "ffmpeg"
     audio = Path(audio)

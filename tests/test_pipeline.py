@@ -7,6 +7,7 @@ pitch-shift accuracy, limiter ceilings, loudness targeting, fingerprint
 discrimination, and a full generate -> song -> check round trip.
 """
 
+import argparse
 import itertools
 import math
 import random
@@ -144,7 +145,7 @@ def test_dsp():
 
 def test_stretch():
     print("\ntime-stretch and pitch-shift")
-    from mpipe.stretch import detect_bpm, detect_key, pitch_shift, time_stretch
+    from mpipe.stretch import pitch_shift, time_stretch
     sr = 44100
     t = np.arange(sr * 4) / sr
     tone = np.stack([np.sin(2 * np.pi * 440 * t)] * 2, axis=1).astype("float32")
@@ -188,10 +189,8 @@ def test_loudness():
 
 def test_fingerprint(tmp):
     print("\nfingerprinting")
-    from mpipe.audio import write_audio
     from mpipe.engine import SongSpec, render_song
-    from mpipe.fingerprint import (Ledger, containment, feature_distance,
-                                   feature_vector, fingerprint_file, similarity)
+    from mpipe.fingerprint import (Ledger, feature_vector, fingerprint_file, similarity)
     files = []
     for seed, key, bpm in ((11, "A Minor", 74), (12, "C Major", 82), (13, "D Minor", 78)):
         path = tmp / f"fp{seed}.wav"
@@ -275,8 +274,8 @@ def test_comfy_workflows():
         check(f"{name}.json describes cleanly", len(describe_workflow(graph)) == len(graph))
 
     art = load_workflow("art")
-    applied = apply_settings(art, prompt="P", negative="N", seed=5, steps=9,
-                             width=640, height=360)
+    apply_settings(art, prompt="P", negative="N", seed=5, steps=9,
+                   width=640, height=360)
     check("art prompt patched", art["6"]["inputs"]["text"] == "P")
     check("art negative patched", art["7"]["inputs"]["text"] == "N")
     check("art seed/steps patched",
@@ -322,7 +321,6 @@ def test_comfy_workflows():
 def test_comfy_roundtrip(tmp):
     """Drive the mock ComfyUI server exactly as the real one is driven."""
     print("\ncomfyui round trip")
-    import shutil as _shutil
     import socket
     import subprocess
     import time as _time
@@ -573,6 +571,193 @@ def test_models_catalogue():
           all(r["key"] != "musicgen" for r in rows), str([r["key"] for r in rows]))
 
 
+def test_bad_inputs(tmp):
+    """A folder of real music has junk in it.  None of it may stop a run."""
+    print("\nawkward inputs")
+    from mpipe.audio import write_audio
+    from mpipe.lofify import lofify_file, settings_from_preset
+    from mpipe.song import MIN_TRACK_SECONDS, build_mix, build_song
+    from mpipe.util import collect_inputs
+
+    folder = tmp / "messy"
+    folder.mkdir(exist_ok=True)
+    sr = 44100
+    t = np.arange(sr * 8) / sr
+    for i in range(3):
+        write_audio(folder / f"good{i}.wav",
+                    np.stack([0.3 * np.sin(2 * np.pi * (180 + 40 * i) * t)] * 2,
+                             axis=1).astype("float32"), sr)
+    (folder / "empty.wav").write_bytes(b"")
+    (folder / "garbage.wav").write_bytes(b"definitely not audio" * 64)
+    write_audio(folder / "tiny.wav",
+                np.stack([0.3 * np.sin(2 * np.pi * 220 * np.arange(sr // 4) / sr)] * 2,
+                         axis=1).astype("float32"), sr)
+    write_audio(folder / "silent.wav", np.zeros((sr * 4, 2), dtype="float32"), sr)
+
+    files = collect_inputs(folder)
+    check("collect_inputs picks up the junk too", len(files) >= 7, str(len(files)))
+
+    out = folder / "song.mp3"
+    report = build_song(files, out, minutes=0.6, progress=False)
+    check("build_song survives unreadable files", report["seconds"] > 10,
+          f"{report['seconds']}s")
+    check("build_song names what it skipped",
+          {"empty.wav", "garbage.wav"} <= set(report["unreadable"]),
+          str(report["unreadable"]))
+    check("build_song skips sub-minimum tracks",
+          "tiny.wav" in report["unreadable"], str(report["unreadable"]))
+
+    mix_out = folder / "mix.mp3"
+    mix = build_mix(files, mix_out, minutes=0.5, progress=False)
+    check("build_mix survives unreadable files", mix["seconds"] > 5, f"{mix['seconds']}s")
+    check("build_mix names what it skipped",
+          {"empty.wav", "garbage.wav"} <= set(mix["unreadable"]),
+          str(mix["unreadable"]))
+
+    # the output now sits in the input folder; a second run must not eat it
+    again = collect_inputs(folder)
+    check("second run sees its own output", out.name in [f.name for f in again])
+    report2 = build_song(again, out, minutes=0.6, progress=False)
+    check("output file is excluded from its own inputs",
+          report2["seconds"] > 10 and out.name not in report2["unreadable"],
+          f"{report2['seconds']}s {report2['unreadable']}")
+
+    try:
+        build_song([folder / "empty.wav", folder / "garbage.wav"],
+                   tmp / "nope.mp3", minutes=0.2, progress=False)
+        check("all-unreadable input fails clearly", False, "no error raised")
+    except RuntimeError as exc:
+        check("all-unreadable input fails clearly", "could be read" in str(exc),
+              str(exc)[:70])
+
+    settings = settings_from_preset("classic")
+    try:
+        lofify_file(folder / "silent.wav", tmp / "sil.mp3", settings, progress=False)
+        check("lofify refuses silence", False, "no error raised")
+    except RuntimeError as exc:
+        check("lofify refuses silence", "silent" in str(exc), str(exc)[:70])
+    try:
+        lofify_file(folder / "tiny.wav", tmp / "tny.mp3", settings, progress=False)
+        check("lofify refuses a too-short file", False, "no error raised")
+    except RuntimeError as exc:
+        check("lofify refuses a too-short file", "short" in str(exc), str(exc)[:70])
+    check("minimum track length is enforced", MIN_TRACK_SECONDS >= 1.0)
+
+
+def test_odd_files(tmp):
+    print("\nmono / unicode / odd rates")
+    from mpipe.audio import load_audio, write_audio
+    from mpipe.lofify import lofify_file, settings_from_preset
+    from mpipe.stretch import analyze_file
+    from mpipe.util import collect_inputs
+
+    made = {}
+    for name, rate, channels in (("mono.wav", 44100, 1),
+                                 ("a file with spaces.wav", 44100, 2),
+                                 ("trene_nihon_cafe.wav", 44100, 2),
+                                 ("lowrate.wav", 8000, 2)):
+        t = np.arange(int(6 * rate)) / rate
+        sig = (0.3 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+        data = np.stack([sig] * channels, axis=1) if channels > 1 else sig[:, None]
+        made[name] = write_audio(tmp / name, data, rate)
+
+    for name, path in made.items():
+        data, got = load_audio(path)
+        check(f"loads {name}", data.ndim == 2 and data.shape[1] == 2 and got > 0,
+              f"{data.shape} @{got}")
+        info = analyze_file(path)
+        check(f"analyses {name}", info["duration"] > 0 and info["bpm"] > 0, str(info))
+
+    settings = settings_from_preset("classic")
+    report = lofify_file(made["mono.wav"], tmp / "mono_lofi.mp3", settings, progress=False)
+    check("lofifies a mono source", report["seconds"] > 0 and (tmp / "mono_lofi.mp3").exists())
+    report = lofify_file(made["lowrate.wav"], tmp / "low_lofi.mp3", settings, progress=False)
+    check("lofifies an 8 kHz source", report["seconds"] > 0)
+
+    listing = tmp / "list.txt"
+    listing.write_text(f"{made['a file with spaces.wav']}\n# a comment\n\n"
+                       f"does_not_exist.wav\n{made['mono.wav']}\n", encoding="utf-8")
+    picked = collect_inputs(listing)
+    check("playlist skips comments, blanks and missing files", len(picked) == 2,
+          str([p.name for p in picked]))
+
+
+def test_effects_reset():
+    """Both backends must honour `reset`, or state leaks between tracks."""
+    print("\neffects reset")
+    from mpipe import effects
+    sr = 44100
+    rng = np.random.default_rng(0)
+    sig = (rng.standard_normal((sr, 2)) * 0.2).astype("float32")
+    for forced in (True, False):
+        if forced and not effects.HAVE_PEDALBOARD:
+            continue
+        chain = (effects.lofi_chain(sr, 0.6) if forced
+                 else effects._fallback_chain(sr, 0.6, 9000.0, 12, True, 0.25))
+        label = "pedalboard" if forced else "fallback"
+        first = chain(sig, reset=True)
+        chain(sig, reset=False)
+        again = chain(sig, reset=True)
+        check(f"{label} chain resets to the same state",
+              float(np.abs(first - again).max()) < 1e-4,
+              f"max diff {float(np.abs(first - again).max()):.2e}")
+
+
+def test_check_warnings(tmp):
+    """`check` has to surface the policy line that lands on lofify output."""
+    print("\ncheck warnings")
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+    import pipeline
+    from mpipe.audio import write_audio
+
+    run = tmp / "runs" / "20260101-000000_lofify-classic"
+    (run / "raw").mkdir(parents=True, exist_ok=True)
+    sr = 44100
+    t = np.arange(sr * 4) / sr
+    track = write_audio(run / "raw" / "01_x_lofi.mp3",
+                        np.stack([0.25 * np.sin(2 * np.pi * 220 * t)] * 2,
+                                 axis=1).astype("float32"), sr)
+    (run / "manifest.json").write_text(_json.dumps({
+        "engine": "lofify", "preset": "classic", "rights_attested": True,
+        "tracks": [{"index": 1, "file": track.name, "status": "ok",
+                    "source": "/somewhere/original.mp3"}]}), encoding="utf-8")
+
+    args = argparse.Namespace(file=str(track), run=None, log=False,
+                              ledger=str(tmp / "ledger.json"), quiet=False)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pipeline.cmd_check(args)
+    out = buf.getvalue()
+    check("check names lofify as the source", "YOUR OWN recordings" in out)
+    check("check names the source file", "original.mp3" in out, out[-300:])
+    check("check warns about the inauthentic-content policy",
+          "inauthentic content" in out, out[-400:])
+    check("check points at the monetisation notes", "MONETIZATION.md" in out)
+    check("long findings are wrapped",
+          all(len(line) <= 78 for line in out.splitlines()),
+          max(out.splitlines(), key=len)[:90])
+
+    builtin = tmp / "runs" / "20260101-000001_lofi-lofi"
+    (builtin / "raw").mkdir(parents=True, exist_ok=True)
+    song = write_audio(builtin / "song.mp3",
+                       np.stack([0.25 * np.sin(2 * np.pi * 220 * t)] * 2,
+                                axis=1).astype("float32"), sr)
+    (builtin / "manifest.json").write_text(_json.dumps({
+        "engine": "builtin", "tracks": []}), encoding="utf-8")
+    args = argparse.Namespace(file=str(song), run=None, log=False,
+                              ledger=str(tmp / "ledger2.json"), quiet=False)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pipeline.cmd_check(args)
+    out = buf.getvalue()
+    check("built-in output is not given the lofify warning",
+          "inauthentic content" not in out, out[-300:])
+    check("built-in output states it is synthesised",
+          "synthesised from scratch" in out, out[-300:])
+
+
 def test_cli():
     print("\ncli")
     import pipeline
@@ -600,7 +785,11 @@ def main():
         test_tags(tmp)
         test_lofify(tmp)
         test_fingerprint(tmp)
+        test_bad_inputs(tmp)
+        test_odd_files(tmp)
+        test_effects_reset()
         test_models_catalogue()
+        test_check_warnings(tmp)
         test_comfy_workflows()
         test_comfy_roundtrip(tmp)
         test_video_loop(tmp)

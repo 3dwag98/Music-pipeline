@@ -31,8 +31,8 @@ from datetime import datetime
 from pathlib import Path
 
 from mpipe import __version__
-from mpipe.util import (DEFAULT_PRESETS, RUNS_DIR, audio_files, collect_inputs,
-                        die, ffmpeg_ok, fmt_time, load_presets, log, new_run,
+from mpipe.util import (DEFAULT_PRESETS, audio_files, collect_inputs,
+                        die, fmt_time, load_presets, log, new_run,
                         read_manifest, resolve_run, set_quiet, slug, warn,
                         write_manifest)
 
@@ -586,7 +586,7 @@ def _titles_from(run):
 
 
 def cmd_song(args):
-    from mpipe.mastering import measure_stream, normalise_stream
+    from mpipe.mastering import normalise_stream
     from mpipe.song import build_song, write_tracklist
 
     run = resolve_run(args.run) if (args.run or not args.input) else new_run("song")
@@ -698,7 +698,7 @@ def _write_report(run, name, report):
 # ---------------------------------------------------------------------------
 
 def cmd_lofify(args):
-    from mpipe.lofify import LofiSettings, PRESETS, lofify_file, settings_from_preset
+    from mpipe.lofify import PRESETS, lofify_file, settings_from_preset
     from mpipe.stretch import analyze_file
 
     sources = collect_inputs(args.input)
@@ -920,17 +920,18 @@ def cmd_check(args):
             log(f"  logged in {ledger.path.name}")
 
         log("")
+        for n in notes:
+            _bullet("-", n)
         if problems:
             overall_ok = False
             log("Fix before uploading:")
             for p in problems:
-                log(f"  ! {p}")
+                _bullet("!", p)
         else:
             log("No blocking problems found.")
-        for n in notes:
-            log(f"  - {n}")
 
     log("\n" + "-" * 68)
+    log("Where this can earn, and the policies that decide it: MONETIZATION.md")
     log("Disclosure: YouTube asks you to tick 'Altered or synthetic content' in")
     log("Studio when the audio is AI-generated or synthesised.  This pipeline's")
     log("output is both.  Ticking it is not a penalty; not ticking it is a policy")
@@ -938,6 +939,19 @@ def cmd_check(args):
     log("what it does is make sure you are not shipping someone else's audio, or")
     log("your own twice.")
     return None if overall_ok else 0
+
+
+def _bullet(marker, text, width=70):
+    """Wrap a finding so a long policy note stays readable in a terminal."""
+    words, line, first = str(text).split(), "", True
+    for word in words:
+        if len(line) + len(word) + 1 > width:
+            log(f"  {marker if first else ' '} {line}")
+            line, first = word, False
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        log(f"  {marker if first else ' '} {line}")
 
 
 def _provenance_for(path):
@@ -962,6 +976,11 @@ def _provenance_for(path):
         lines.append("        Nothing here can verify that - if any of those inputs")
         lines.append("        is someone else's recording, a lofi edit of it is still")
         lines.append("        theirs, and Content ID matches edited audio.")
+        problems.append(
+            "YouTube's 'inauthentic content' policy names songs that are only "
+            "pitch-shifted or sped up.  That is what lofify does by default, so "
+            "raw lofify output is not a finished upload - curate it, arrange it "
+            "into a song, and put original visuals on it.  See MONETIZATION.md.")
     elif engine == "ace-step":
         lines.append("source: ACE-Step (local model, text-to-music).")
         if manifest.get("reference"):

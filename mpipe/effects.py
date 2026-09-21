@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import dsp
-from .util import log, warn
+from .util import warn
 
 try:
     import pedalboard as _pb
@@ -127,27 +127,41 @@ def lofi_chain(sr, amount=0.6, lowpass_hz=None, bitcrush_bits=None, wobble=True,
 
 
 def _fallback_chain(sr, amount, cutoff, bits, wobble, room):
-    """The same idea with the built-in DSP, for installs without pedalboard."""
-    hp = dsp.Biquad("highpass", sr, 30.0, 0.7)
-    lp = dsp.Biquad("lowpass", sr, cutoff, 0.7)
-    mud = dsp.Biquad("peak", sr, 265.0, 1.0, gain_db=-2.5 * amount)
-    presence = dsp.Biquad("peak", sr, 2600.0, 0.8, gain_db=1.8)
-    air = dsp.Biquad("highshelf", sr, 10500.0, 0.7, gain_db=-4.0 * amount)
-    wow = dsp.TapeWow(sr, wow_ms=2.0 * amount, flutter_ms=0.25 * amount) if wobble else None
-    verb = dsp.FDNReverb(sr, room=room, damping=0.5) if room > 0 else None
-    comp = dsp.Compressor(sr, threshold_db=-16.0, ratio=2.2,
-                          attack_ms=12.0, release_ms=220.0)
+    """The same idea with the built-in DSP, for installs without pedalboard.
+
+    `reset` has to be honoured here too.  These processors are stateful, and a
+    caller that resets between tracks (lofify does) would otherwise get filter
+    and reverb state carried over on one backend but not the other.
+    """
+    state = {}
+
+    def build():
+        state["hp"] = dsp.Biquad("highpass", sr, 30.0, 0.7)
+        state["lp"] = dsp.Biquad("lowpass", sr, cutoff, 0.7)
+        state["mud"] = dsp.Biquad("peak", sr, 265.0, 1.0, gain_db=-2.5 * amount)
+        state["presence"] = dsp.Biquad("peak", sr, 2600.0, 0.8, gain_db=1.8)
+        state["air"] = dsp.Biquad("highshelf", sr, 10500.0, 0.7, gain_db=-4.0 * amount)
+        state["wow"] = (dsp.TapeWow(sr, wow_ms=2.0 * amount, flutter_ms=0.25 * amount)
+                        if wobble else None)
+        state["verb"] = dsp.FDNReverb(sr, room=room, damping=0.5) if room > 0 else None
+        state["comp"] = dsp.Compressor(sr, threshold_db=-16.0, ratio=2.2,
+                                       attack_ms=12.0, release_ms=220.0)
+
+    build()
 
     def run(audio, reset=False):
-        y = air.process(presence.process(mud.process(lp.process(hp.process(audio)))))
+        if reset:
+            build()
+        y = state["air"].process(state["presence"].process(state["mud"].process(
+            state["lp"].process(state["hp"].process(audio)))))
         if bits < 16:
             y = dsp.bit_crush(y, bits=max(4, bits))
-        if wow is not None:
-            y = wow.process(y)
+        if state["wow"] is not None:
+            y = state["wow"].process(y)
         y = dsp.tape_saturate(y, drive=1.0 + 0.5 * amount)
-        if verb is not None:
-            y = y + verb.process(y * (0.12 * amount + 0.04))
-        return comp.process(y)
+        if state["verb"] is not None:
+            y = y + state["verb"].process(y * (0.12 * amount + 0.04))
+        return state["comp"].process(y)
 
     return run
 

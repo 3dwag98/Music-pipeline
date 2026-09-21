@@ -11,7 +11,7 @@ import math
 
 import numpy as np
 
-from .synth import _bp, _lp, perc_env
+from .synth import _bp
 
 TWO_PI = 2.0 * math.pi
 
