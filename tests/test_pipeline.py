@@ -758,13 +758,173 @@ def test_check_warnings(tmp):
           "synthesised from scratch" in out, out[-300:])
 
 
+def test_hfaudio_logic():
+    """Everything about the HF backend that does not need the weights."""
+    print("\nhf backend (logic)")
+    from mpipe import hfaudio
+    from mpipe.hfaudio import (DEFAULT_MODEL, GenSettings, MODELS,
+                               MUSICGEN_FRAME_RATE, estimate_minutes,
+                               fp16_is_suspect, lofi_prompt)
+
+    check("default is the smallest model", DEFAULT_MODEL == "musicgen-small")
+    check("catalogue is populated", len(MODELS) >= 2)
+    for key, spec in MODELS.items():
+        check(f"{key} declares a licence", bool(spec.licence))
+        check(f"{key} declares commercial status", isinstance(spec.commercial, bool))
+        check(f"{key} has a repo id", "/" in spec.repo)
+    # the licence is the thing people get wrong, so assert it rather than trust it
+    check("musicgen is flagged non-commercial",
+          MODELS["musicgen-small"].commercial is False)
+    check("musicgen licence names CC-BY-NC",
+          "CC-BY-NC" in MODELS["musicgen-small"].licence)
+
+    for name in ("NVIDIA GeForce GTX 1660 Ti", "GTX 1650", "NVIDIA T600"):
+        check(f"fp16 flagged suspect on {name}", fp16_is_suspect(name))
+    for name in ("NVIDIA GeForce RTX 3060", "NVIDIA A100-SXM4-40GB", "RTX 4090"):
+        check(f"fp16 fine on {name}", not fp16_is_suspect(name))
+
+    if hfaudio.torch_available():
+        import torch
+        original = hfaudio.gpu_name
+        try:
+            hfaudio.gpu_name = lambda: "NVIDIA GeForce GTX 1660 Ti"
+            dtype, label, why = hfaudio.resolve_dtype("auto")
+            check("auto picks fp32 on a 1660 Ti",
+                  dtype is torch.float32 and label == "fp32", f"{label}: {why}")
+            check("auto explains itself", "16-series" in why, why)
+            dtype, label, why = hfaudio.resolve_dtype("fp16")
+            check("fp16 is still honoured when forced",
+                  dtype is torch.float16 and label == "fp16", label)
+            check("forced fp16 warns about the card", "selftest" in why, why)
+            hfaudio.gpu_name = lambda: "NVIDIA GeForce RTX 4090"
+            dtype, label, _ = hfaudio.resolve_dtype("auto")
+            check("auto picks fp16 on a healthy card",
+                  dtype is torch.float16 and label == "fp16", label)
+            dtype, label, _ = hfaudio.resolve_dtype("auto", device="cpu")
+            check("cpu always gets fp32", label == "fp32", label)
+        finally:
+            hfaudio.gpu_name = original
+    else:
+        print("  skip (no torch) - dtype resolution")
+
+    prompt = lofi_prompt(82, extra="rain", mood="sleepy")
+    check("prompt names the genre", "lofi hip hop" in prompt, prompt)
+    check("prompt carries the tempo", "82 bpm" in prompt, prompt)
+    check("prompt carries mood and extras",
+          "sleepy" in prompt and "rain" in prompt, prompt)
+
+    settings = GenSettings(seconds=12.5)
+    check("settings round-trip", settings.to_dict()["seconds"] == 12.5)
+    check("frame rate is the codec's", MUSICGEN_FRAME_RATE == 50)
+    cpu = estimate_minutes(60, "cpu", "fp32")
+    gpu = estimate_minutes(60, "cuda", "fp16")
+    check("cpu estimated slower than gpu", cpu > gpu, f"{cpu} vs {gpu}")
+
+
+def test_hfaudio_model(tmp):
+    """Actually run the model, when the weights are already on this machine."""
+    print("\nhf backend (real model)")
+    from mpipe import hfaudio
+    if not hfaudio.torch_available():
+        print("  skip (no torch)")
+        return
+    try:
+        import transformers  # noqa: F401
+    except Exception:
+        print("  skip (no transformers)")
+        return
+    import os
+    if os.environ.get("MPIPE_SKIP_MODEL_TESTS"):
+        print("  skip (MPIPE_SKIP_MODEL_TESTS set)")
+        return
+    from huggingface_hub import try_to_load_from_cache
+    cached = try_to_load_from_cache("facebook/musicgen-small", "config.json")
+    if not isinstance(cached, str):
+        print("  skip (weights not cached; run `pipeline.py hf --selftest` once)")
+        return
+
+    from mpipe.hfaudio import GenSettings, HFAudioGenerator
+    generator = HFAudioGenerator("musicgen-small", device="cpu", quiet=True).load()
+    check("sample rate reported", generator.sample_rate == 32000,
+          str(generator.sample_rate))
+
+    result = generator.selftest(seconds=1.0)
+    check("selftest returns a verdict", "verdict" in result and result["seconds"] > 0)
+    check("selftest says fp32 on cpu is fine", result["ok"], result["verdict"])
+    check("selftest detects finite audio", result["finite"])
+    check("selftest measures a real peak", result["peak"] > 1e-3, str(result["peak"]))
+
+    audio = generator.generate(lofi_prompt_short(), GenSettings(seconds=2.0, seed=3),
+                               progress=False)
+    check("generate returns stereo-shaped frames", audio.ndim == 2, str(audio.shape))
+    check("generate honours the length",
+          abs(len(audio) / generator.sample_rate - 2.0) < 0.6,
+          f"{len(audio) / generator.sample_rate:.2f}s")
+    check("generated audio is finite", bool(np.isfinite(audio).all()))
+    check("generated audio is not silent", float(np.abs(audio).max()) > 1e-3)
+
+    # Longer-than-one-call output is the part most likely to break, so force the
+    # continuation path with a tiny chunk limit rather than actually generating
+    # 40 seconds on a CPU.
+    original_limit = hfaudio.MAX_CHUNK_SECONDS
+    try:
+        hfaudio.MAX_CHUNK_SECONDS = 2.0
+        stitched = generator.generate(lofi_prompt_short(),
+                                      GenSettings(seconds=5.0, seed=7,
+                                                  overlap_seconds=1.0),
+                                      progress=False)
+    finally:
+        hfaudio.MAX_CHUNK_SECONDS = original_limit
+    sr = generator.sample_rate
+    check("continuation reaches the requested length",
+          abs(len(stitched) / sr - 5.0) < 0.6, f"{len(stitched) / sr:.2f}s")
+    check("continuation output is finite", bool(np.isfinite(stitched).all()))
+    mono = stitched.mean(axis=1)
+    window = int(0.25 * sr)
+    levels = [float(np.sqrt((mono[i * window:(i + 1) * window] ** 2).mean()))
+              for i in range(len(mono) // window)]
+    check("no silent gap at the joins", all(v > 1e-4 for v in levels),
+          str([round(v, 4) for v in levels]))
+    steps = np.abs(np.diff(mono))
+    # a hard click at a join shows up as a jump far beyond the normal maximum
+    check("joins do not click",
+          float(steps.max()) < float(np.percentile(steps, 99.99)) * 4.0,
+          f"max {float(steps.max()):.3f} vs p99.99 "
+          f"{float(np.percentile(steps, 99.99)):.3f}")
+
+    # asking for a length just past a chunk boundary must not fire a whole
+    # extra pass to cover a fraction of a second
+    calls = {"n": 0}
+    real_once = generator._generate_once
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real_once(*a, **kw)
+
+    generator._generate_once = counting
+    try:
+        hfaudio.MAX_CHUNK_SECONDS = 2.0
+        generator.generate(lofi_prompt_short(),
+                           GenSettings(seconds=2.2, seed=9, overlap_seconds=1.0),
+                           progress=False)
+    finally:
+        generator._generate_once = real_once
+        hfaudio.MAX_CHUNK_SECONDS = original_limit
+    check("a sliver does not trigger another pass", calls["n"] == 1,
+          f"{calls['n']} model calls for 2.2s at a 2.0s chunk limit")
+
+
+def lofi_prompt_short():
+    return "lofi hip hop, mellow rhodes, soft drums"
+
+
 def test_cli():
     print("\ncli")
     import pipeline
     for args in (["--help"], ["lofi", "-h"], ["song", "-h"], ["all", "-h"],
                  ["check", "-h"], ["doctor", "-h"], ["art", "-h"],
                  ["generate", "-h"], ["lofify", "-h"], ["mix", "-h"],
-                 ["models", "-h"]):
+                 ["models", "-h"], ["hf", "-h"]):
         try:
             pipeline.main(args)
         except SystemExit as exc:
@@ -790,6 +950,8 @@ def main():
         test_effects_reset()
         test_models_catalogue()
         test_check_warnings(tmp)
+        test_hfaudio_logic()
+        test_hfaudio_model(tmp)
         test_comfy_workflows()
         test_comfy_roundtrip(tmp)
         test_video_loop(tmp)

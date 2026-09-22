@@ -27,6 +27,8 @@ import argparse
 import json
 import random
 import sys
+
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -694,6 +696,121 @@ def _write_report(run, name, report):
 
 
 # ---------------------------------------------------------------------------
+# hf - local text-to-audio model (the smallest one that makes music)
+# ---------------------------------------------------------------------------
+
+def cmd_hf(args):
+    from mpipe.audio import resample, write_audio
+    from mpipe.hfaudio import (GenSettings, HFAudioGenerator, MODELS,
+                               estimate_minutes, lofi_prompt)
+
+    generator = HFAudioGenerator(args.model, dtype=args.dtype, device=args.device,
+                                 cache_dir=args.cache_dir, quiet=args.quiet)
+    generator.load()
+
+    if args.selftest:
+        log("\nSelf-test: generating a short clip and checking it is real audio...")
+        result = generator.selftest(seconds=args.selftest_seconds)
+        log("")
+        for key in ("model", "device", "dtype", "seconds", "elapsed", "finite",
+                    "peak", "rms"):
+            log(f"  {key:<9} {result[key]}")
+        log("")
+        _bullet("!" if not result["ok"] else "+", result["verdict"])
+        if not result["ok"]:
+            log("")
+            log("  This is exactly what the self-test is for: the output is not")
+            log("  usable audio in this precision.  Re-run with --dtype fp32.")
+            return None
+        estimate = estimate_minutes(args.minutes * 60, generator.device,
+                                    generator.dtype_label)
+        log(f"\n  Rough guide: {args.minutes:g} minutes of audio will take around "
+            f"{estimate:.0f} minutes per track on this setup.")
+        return None
+
+    presets = load_presets(args.presets)
+    seed = args.seed if args.seed is not None else random.randrange(2 ** 31)
+    run = Path(args.run) if args.run else new_run(f"hf_{args.model}")
+    raw = run / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+
+    spec_info = MODELS[args.model]
+    manifest = read_manifest(run)
+    manifest.update({
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "engine": "hf-text-to-audio", "version": __version__,
+        "model": spec_info.repo, "model_licence": spec_info.licence,
+        "commercial_use": spec_info.commercial,
+        "dtype": generator.dtype_label, "device": generator.device,
+        "run_seed": seed, "minutes_each": args.minutes,
+        "source": f"generated locally by {spec_info.repo}",
+    })
+    manifest.setdefault("tracks", [])
+    write_manifest(run, manifest)
+
+    log(f"\nRun folder: {run}")
+    estimate = estimate_minutes(args.minutes * 60, generator.device,
+                                generator.dtype_label)
+    log(f"Rough guide: about {estimate:.0f} min per track, "
+        f"{estimate * args.count:.0f} min for all {args.count}\n")
+
+    target_sr = args.samplerate
+    made = 0
+    for i in range(1, args.count + 1):
+        used = set()
+        rng = random.Random((seed * 1_000_003 + i * 7_919) % (2 ** 63))
+        track = build_track_spec(presets, args.genre, args.mood, rng, used,
+                                 bpm=args.bpm, key=args.key, extra=args.extra)
+        prompt = args.prompt or lofi_prompt(track["bpm"], extra=args.extra,
+                                            mood=args.mood)
+        if args.use_presets and not args.prompt:
+            prompt = f"{track['caption']}, {track['bpm']} bpm"
+        settings = GenSettings(seconds=args.minutes * 60.0, guidance=args.guidance,
+                               temperature=args.temperature, top_k=args.top_k,
+                               top_p=args.top_p, seed=rng.randrange(2 ** 31),
+                               overlap_seconds=args.overlap)
+        log(f"[{i}/{args.count}] {track['title']}  |  {track['bpm']} BPM, "
+            f"{args.minutes:g} min")
+        log(f"    {prompt}")
+        try:
+            audio = generator.generate(prompt, settings, progress=not args.quiet)
+        except KeyboardInterrupt:
+            write_manifest(run, manifest)
+            die("stopped by user (finished tracks are kept)")
+        except Exception as exc:
+            log(f"    failed: {exc}")
+            manifest["tracks"].append({"index": i, "status": "failed",
+                                       "error": str(exc), "prompt": prompt})
+            write_manifest(run, manifest)
+            continue
+
+        sr = generator.sample_rate
+        if sr != target_sr:
+            audio = resample(audio, sr, target_sr)
+        if audio.ndim == 1:
+            audio = audio[:, None]
+        if audio.shape[1] == 1:
+            audio = np.repeat(audio, 2, axis=1)
+        dest = _out_path(raw / f"{i:02d}_{slug(track['title'])}", args)
+        write_audio(dest, audio, target_sr, mp3_quality=_quality(args))
+        _tag(dest, args, title=track["title"], artist=args.artist,
+             album=args.album, track=i, bpm=track["bpm"],
+             year=datetime.now().year)
+        log(f"    -> {dest.name}  {fmt_time(len(audio) / target_sr)}\n")
+        manifest["tracks"].append({
+            "index": i, "title": track["title"], "file": dest.name, "status": "ok",
+            "prompt": prompt, "bpm": track["bpm"],
+            "settings": settings.to_dict()})
+        write_manifest(run, manifest)
+        made += 1
+
+    log(f"Done: {made}/{args.count} tracks in {raw}")
+    if made:
+        log(f"Next:  python pipeline.py song --run {run} --hours 1")
+    return run
+
+
+# ---------------------------------------------------------------------------
 # lofify - turn songs you already have into lofi
 # ---------------------------------------------------------------------------
 
@@ -1144,6 +1261,37 @@ def add_output_args(p):
     p.add_argument("--no-tags", action="store_true", help="do not write metadata")
 
 
+def add_hf_args(p):
+    p.add_argument("--model", default="musicgen-small",
+                   help="musicgen-small (default, smallest), musicgen-stereo-small, "
+                        "musicgen-medium")
+    p.add_argument("--dtype", default="auto", choices=["auto", "fp16", "fp32"],
+                   help="auto picks fp32 on 16-series cards; fp16 forces half precision")
+    p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    p.add_argument("--cache-dir", help="where to keep the downloaded weights")
+    p.add_argument("--count", type=int, default=4, help="how many tracks")
+    p.add_argument("--minutes", type=float, default=2.0, help="minutes per track")
+    p.add_argument("--prompt", help="use this exact prompt for every track")
+    p.add_argument("--use-presets", action="store_true",
+                   help="build prompts from presets.json instead of the lofi template")
+    p.add_argument("--genre", default="lofi", help="preset genre for prompt wording")
+    p.add_argument("--mood", help="mood preset or free text")
+    p.add_argument("--extra", help="extra words appended to every prompt")
+    p.add_argument("--bpm", type=int, help="fixed tempo in the prompt")
+    p.add_argument("--key", help="fixed key in the prompt")
+    p.add_argument("--guidance", type=float, default=3.0, help="classifier-free guidance")
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--top-k", type=int, default=250)
+    p.add_argument("--top-p", type=float, default=0.0)
+    p.add_argument("--overlap", type=float, default=5.0,
+                   help="seconds fed back when continuing past the model's limit")
+    p.add_argument("--seed", type=int)
+    p.add_argument("--presets", default=str(DEFAULT_PRESETS))
+    p.add_argument("--selftest", action="store_true",
+                   help="check this card produces real audio in the chosen precision")
+    p.add_argument("--selftest-seconds", type=float, default=3.0)
+
+
 def add_lofify_args(p):
     p.add_argument("input", nargs="+", help="songs to lofi (files, a folder, or a .txt list)")
     p.add_argument("--preset", default="classic",
@@ -1371,6 +1519,12 @@ def main(argv=None):
     add_generate_args(p)
     add_comfy_args(p)
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("hf", help="generate lofi with a local Hugging Face model")
+    add_common(p)
+    add_hf_args(p)
+    add_output_args(p)
+    p.set_defaults(func=cmd_hf)
 
     p = sub.add_parser("lofify", help="turn songs you already have into lofi")
     add_common(p)

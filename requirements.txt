@@ -15,6 +15,12 @@ mutagen>=1.45
 # Only for the ACE-Step / ComfyUI backends ("generate", "art").
 requests>=2.28
 
+# Only for the `hf` backend (a local Hugging Face text-to-audio model).
+# Install torch for YOUR cuda version, not from PyPI's default wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install transformers
+# transformers>=4.40
+
 # Optional extras:
 #   demucs      proper stem separation, so "lofify --vocals remove" is clean
 #               instead of using the centre-channel trick (pulls in torch)

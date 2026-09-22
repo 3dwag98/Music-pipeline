@@ -149,6 +149,60 @@ caption LLM, CPU offload, float32) and backs up any existing `.env` first.
 No GPU handy? `python mock_server.py` in a second terminal fakes the API so you
 can rehearse the whole flow.
 
+### `hf` — a local Hugging Face model
+
+The smallest text-to-audio model that genuinely makes music, running on your own
+card. No server, no ComfyUI — it loads the weights in-process.
+
+```bat
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install transformers
+
+python pipeline.py hf --selftest                 :: check your card first
+python pipeline.py hf --count 4 --minutes 2      :: then generate
+```
+
+**Run `--selftest` before anything long.** It generates a few seconds and checks
+the result is real audio rather than NaNs or silence — which is the actual
+answer to the fp16 question below, measured on your card instead of guessed.
+
+| Model | Size | Licence | Commercial? |
+|---|---|---|---|
+| `musicgen-small` (default) | 300M decoder | CC-BY-NC 4.0 | **no** |
+| `musicgen-stereo-small` | 300M decoder | CC-BY-NC 4.0 | **no** |
+| `musicgen-medium` | 1.5B decoder | CC-BY-NC 4.0 | **no** |
+
+> **These weights are non-commercial.** MusicGen's *code* is MIT but its
+> *weights* are CC-BY-NC 4.0, and a monetised channel is commercial use. This
+> backend prints that warning every time it loads. If you intend to earn from
+> the output, use `lofi` (the built-in engine) or ACE-Step instead — see
+> [`MONETIZATION.md`](MONETIZATION.md) and `pipeline.py models`.
+
+#### fp16 on a GTX 1660 Ti
+
+`--dtype auto` (the default) picks **fp32** on 16-series cards, because Turing
+TU116's half-precision path is known to produce NaNs. That is well documented
+for *diffusion* models; MusicGen is an autoregressive transformer, so it may be
+perfectly fine — which is why `--dtype fp16` still works and `--selftest` exists
+to settle it on your hardware:
+
+```bat
+python pipeline.py hf --selftest --dtype fp16    :: does half precision work here?
+python pipeline.py hf --count 4 --dtype fp16     :: if it passed, use it
+```
+
+If fp16 fails, the self-test says so in one line and tells you to use fp32.
+
+#### Longer than 30 seconds
+
+MusicGen generates about 30s per call. Anything longer is built by feeding the
+tail of what it just made back in as an audio prompt, so a five-minute track is
+one continuous take rather than clips butted together. `--overlap` controls how
+much tail is carried across.
+
+Output lands in a normal run folder, so `master`, `song`, `check` and the rest
+work on it exactly as they do for the other generators.
+
 ### `lofify` — songs you already have
 
 Takes finished music and rebuilds it as lofi. The moves, in the order they
@@ -565,6 +619,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 |---|---|
 | `doctor` | check this PC; `--write-env` writes tuned ACE-Step settings |
 | `lofi` | generate tracks with the built-in engine (no GPU) |
+| `hf` | generate with a local Hugging Face model (`--selftest` first) |
 | `lofify` | turn songs you already have into lofi (needs `--i-own-this`) |
 | `generate` | generate tracks with ACE-Step (`--backend comfy` to route via ComfyUI) |
 | `art` | generate cover art in ComfyUI + a seamless video loop |
@@ -608,3 +663,6 @@ Shared on every command that writes audio: `--format {mp3,wav,flac}`,
 | Tags missing from the MP3s | `pip install mutagen` |
 | Lofi version sounds too muddy | lower `--amount`, or raise `--lowpass` |
 | Not sure which model to use | `python pipeline.py models` — it checks your VRAM and flags the non-commercial weights |
+| `hf` output is silence or noise | run `pipeline.py hf --selftest`; if fp16 fails on your card, use `--dtype fp32` |
+| `hf` says it needs PyTorch | `pip install torch --index-url https://download.pytorch.org/whl/cu121` then `pip install transformers` |
+| `hf` is very slow | it is running on the CPU — check `--selftest` reports `device: cuda` |
