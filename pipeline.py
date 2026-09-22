@@ -700,7 +700,8 @@ def _write_report(run, name, report):
 # ---------------------------------------------------------------------------
 
 def cmd_hf(args):
-    from mpipe.audio import resample, write_audio
+    from mpipe.audio import integrated_lufs, resample, true_peak_db, write_audio
+    from mpipe.effects import brickwall
     from mpipe.hfaudio import (GenSettings, HFAudioGenerator, MODELS,
                                estimate_minutes, lofi_prompt)
 
@@ -791,15 +792,33 @@ def cmd_hf(args):
             audio = audio[:, None]
         if audio.shape[1] == 1:
             audio = np.repeat(audio, 2, axis=1)
+
+        # Master it like every other generator here does.  Raw model output is
+        # not level-controlled - measured at -12.9 LUFS and +1.1 dBTP, which
+        # clips once it is encoded to MP3.
+        measured = integrated_lufs(audio, target_sr)
+        if np.isfinite(measured):
+            audio = audio * (10 ** ((args.lufs - measured) / 20.0))
+        audio = brickwall(audio, target_sr, ceiling_db=args.peak, true_peak=True)
+        after = integrated_lufs(audio, target_sr)
+        drift = args.lufs - after
+        if np.isfinite(after) and abs(drift) > 0.4:
+            audio = brickwall(audio * (10 ** (drift / 20.0)), target_sr,
+                              ceiling_db=args.peak, true_peak=True)
+            after = integrated_lufs(audio, target_sr)
+        peak_db = true_peak_db(audio, target_sr)
+
         dest = _out_path(raw / f"{i:02d}_{slug(track['title'])}", args)
         write_audio(dest, audio, target_sr, mp3_quality=_quality(args))
         _tag(dest, args, title=track["title"], artist=args.artist,
              album=args.album, track=i, bpm=track["bpm"],
              year=datetime.now().year)
-        log(f"    -> {dest.name}  {fmt_time(len(audio) / target_sr)}\n")
+        log(f"    -> {dest.name}  {fmt_time(len(audio) / target_sr)}  "
+            f"{after:.1f} LUFS  {peak_db:.2f} dBTP\n")
         manifest["tracks"].append({
             "index": i, "title": track["title"], "file": dest.name, "status": "ok",
-            "prompt": prompt, "bpm": track["bpm"],
+            "prompt": prompt, "bpm": track["bpm"], "lufs": round(float(after), 2),
+            "true_peak_db": round(float(peak_db), 2),
             "settings": settings.to_dict()})
         write_manifest(run, manifest)
         made += 1
@@ -1287,6 +1306,8 @@ def add_hf_args(p):
                    help="seconds fed back when continuing past the model's limit")
     p.add_argument("--seed", type=int)
     p.add_argument("--presets", default=str(DEFAULT_PRESETS))
+    p.add_argument("--lufs", type=float, default=-14.0, help="loudness target")
+    p.add_argument("--peak", type=float, default=-1.0, help="true-peak ceiling in dBTP")
     p.add_argument("--selftest", action="store_true",
                    help="check this card produces real audio in the chosen precision")
     p.add_argument("--selftest-seconds", type=float, default=3.0)

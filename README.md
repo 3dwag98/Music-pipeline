@@ -200,8 +200,11 @@ tail of what it just made back in as an audio prompt, so a five-minute track is
 one continuous take rather than clips butted together. `--overlap` controls how
 much tail is carried across.
 
-Output lands in a normal run folder, so `master`, `song`, `check` and the rest
-work on it exactly as they do for the other generators.
+Output is mastered on the way out — raw model output is not level-controlled
+(a real 1-minute render measured **−12.9 LUFS and +1.1 dBTP**, which clips once
+encoded to MP3), so `hf` normalises to `--lufs` and limits to `--peak` like
+every other generator here. It lands in a normal run folder, so `master`,
+`song`, `check` and the rest work on it unchanged.
 
 ### `lofify` — songs you already have
 

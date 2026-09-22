@@ -820,6 +820,43 @@ def test_hfaudio_logic():
     gpu = estimate_minutes(60, "cuda", "fp16")
     check("cpu estimated slower than gpu", cpu > gpu, f"{cpu} vs {gpu}")
 
+    # Raw model output is not level-controlled: the first real 1-minute render
+    # measured -12.9 LUFS and +1.1 dBTP, which clips once encoded to MP3.  The
+    # `hf` command masters like every other generator, so guard that here.
+    from mpipe.audio import integrated_lufs, true_peak_db
+    from mpipe.effects import brickwall
+    sr = 44100
+    rng = np.random.default_rng(5)
+    t = np.arange(sr * 6) / sr
+    hot = np.stack([0.6 * np.sin(2 * np.pi * 180 * t)
+                    + 0.3 * np.sin(2 * np.pi * 2400 * t)
+                    + 0.15 * rng.standard_normal(len(t))] * 2, axis=1).astype("float32")
+    hot *= 1.8
+    check("the unmastered case really does overshoot",
+          true_peak_db(hot, sr) > -1.0, f"{true_peak_db(hot, sr):.2f} dBTP")
+    measured = integrated_lufs(hot, sr)
+    fixed = hot * (10 ** ((-14.0 - measured) / 20.0))
+    fixed = brickwall(fixed, sr, ceiling_db=-1.0, true_peak=True)
+    after = integrated_lufs(fixed, sr)
+    drift = -14.0 - after
+    if abs(drift) > 0.4:
+        fixed = brickwall(fixed * (10 ** (drift / 20.0)), sr,
+                          ceiling_db=-1.0, true_peak=True)
+        after = integrated_lufs(fixed, sr)
+    check("mastering lands on the loudness target", abs(after + 14.0) < 0.6,
+          f"{after:.2f} LUFS")
+    check("mastering holds the true-peak ceiling",
+          true_peak_db(fixed, sr) <= -0.9, f"{true_peak_db(fixed, sr):.2f} dBTP")
+
+    import pipeline
+    parser_flags = [a for a in dir(pipeline) if a == "add_hf_args"]
+    check("hf exposes its own loudness controls", bool(parser_flags))
+    import argparse as _ap
+    probe = _ap.ArgumentParser()
+    pipeline.add_hf_args(probe)
+    opts = {a.dest for a in probe._actions}
+    check("hf takes --lufs and --peak", {"lufs", "peak"} <= opts, str(sorted(opts))[:90])
+
 
 def test_hfaudio_model(tmp):
     """Actually run the model, when the weights are already on this machine."""
