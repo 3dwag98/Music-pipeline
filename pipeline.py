@@ -763,7 +763,8 @@ def cmd_hf(args):
         track = build_track_spec(presets, args.genre, args.mood, rng, used,
                                  bpm=args.bpm, key=args.key, extra=args.extra)
         prompt = args.prompt or lofi_prompt(track["bpm"], extra=args.extra,
-                                            mood=args.mood)
+                                            mood=args.mood, rng=rng,
+                                            texture=args.texture)
         if args.use_presets and not args.prompt:
             prompt = f"{track['caption']}, {track['bpm']} bpm"
         settings = GenSettings(seconds=args.minutes * 60.0, guidance=args.guidance,
@@ -1296,6 +1297,9 @@ def add_hf_args(p):
     p.add_argument("--genre", default="lofi", help="preset genre for prompt wording")
     p.add_argument("--mood", help="mood preset or free text")
     p.add_argument("--extra", help="extra words appended to every prompt")
+    p.add_argument("--texture", action="store_true",
+                   help="ask for vinyl crackle in the prompt (off by default - "
+                        "naming it makes the model foreground the artefact)")
     p.add_argument("--bpm", type=int, help="fixed tempo in the prompt")
     p.add_argument("--key", help="fixed key in the prompt")
     p.add_argument("--guidance", type=float, default=3.0, help="classifier-free guidance")

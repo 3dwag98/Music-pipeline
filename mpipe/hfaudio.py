@@ -347,24 +347,81 @@ class HFAudioGenerator:
 
 # ------------------------------------------------------------- prompt help ---
 
-#: Prompt fragments that reliably steer MusicGen toward lofi.
-LOFI_PROMPT = ("lofi hip hop instrumental, no vocals, mellow Rhodes electric piano, "
-               "dusty boom bap drums, warm sub bass, vinyl crackle, relaxed and "
-               "nostalgic, {bpm} bpm")
+# ------------------------------------------------------------- prompt help ---
+#
+# MusicGen responds to positive musical description, not to negation.  "no
+# vocals" often makes vocals *more* likely because the model sees the word, and
+# naming production artefacts ("vinyl crackle", "tape hiss", "lo-fi quality")
+# makes it render the artefact instead of the music.  Everything below is
+# phrased as what the music IS.
+
+#: Core identity of the genre - always present.
+LOFI_CORE = "lofi hip hop, chill instrumental beat"
+
+#: Varied pools, so ten tracks do not come out as ten takes of one idea.
+PROMPT_POOLS = {
+    "keys": [
+        "warm Rhodes electric piano playing soft jazz chords",
+        "mellow felt piano with gentle seventh chords",
+        "smooth electric piano with lush major-seventh voicings",
+        "soft muted electric piano, warm and rounded",
+        "dreamy vibraphone over quiet piano chords",
+        "gentle nylon-string guitar playing jazzy chords",
+    ],
+    "drums": [
+        "relaxed boom bap drums with a soft kick and rimshot",
+        "laid-back swung hip hop drums, brushed snare",
+        "slow head-nodding drum groove, soft and unhurried",
+        "gentle drums with light hi-hats and a deep kick",
+    ],
+    "bass": [
+        "warm round bassline",
+        "smooth upright bass walking gently",
+        "deep mellow sub bass",
+        "soft melodic bass holding the groove",
+    ],
+    "mood": [
+        "calm and nostalgic",
+        "warm, cosy and relaxed",
+        "peaceful late-night mood",
+        "soft, melancholic and reflective",
+        "easy Sunday-afternoon feeling",
+        "gentle and dreamy",
+    ],
+    "quality": [
+        "smooth and musical, well-played",
+        "warm analogue recording, clean mix",
+        "rich harmony, natural groove",
+    ],
+}
 
 
-def lofi_prompt(bpm=78, extra=None, mood=None):
-    parts = [LOFI_PROMPT.format(bpm=int(bpm))]
-    if mood:
-        parts.append(str(mood))
+def lofi_prompt(bpm=78, extra=None, mood=None, rng=None, texture=False):
+    """Build a varied, musical lofi prompt.
+
+    `texture=True` adds the vinyl/tape wording back in for anyone who wants
+    that sound - it is off by default because it makes the model foreground the
+    crackle rather than the music.
+    """
+    import random as _random
+    rng = rng or _random.Random()
+    parts = [LOFI_CORE,
+             rng.choice(PROMPT_POOLS["keys"]),
+             rng.choice(PROMPT_POOLS["drums"]),
+             rng.choice(PROMPT_POOLS["bass"]),
+             str(mood) if mood else rng.choice(PROMPT_POOLS["mood"]),
+             rng.choice(PROMPT_POOLS["quality"]),
+             f"{int(bpm)} bpm"]
+    if texture:
+        parts.insert(-1, "soft vinyl crackle in the background")
     if extra:
         parts.append(str(extra))
     return ", ".join(parts)
 
 
 #: Wall-clock cost per second of audio, for the "is this worth starting"
-#: question.  The CPU figure is measured (musicgen-small, ~3.8x realtime on this
-#: machine); the GPU figures are estimates and will vary with the card.
+#: question.  The CPU figure is measured (musicgen-small, ~4x realtime on a
+#: laptop core); the GPU figures are estimates and vary with the card.
 SPEED_FACTORS = {"cpu": 4.0, "cuda-fp16": 1.5, "cuda-fp32": 2.5}
 
 
