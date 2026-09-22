@@ -437,6 +437,13 @@ def cmd_art(args):
     return run
 
 
+def _clock_short(seconds):
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}h{m:02d}m" if h else (f"{m}m{sec:02d}s" if m else f"{sec}s")
+
+
 def _parse_size(size):
     try:
         width, height = (int(v) for v in str(size).lower().split("x"))
@@ -703,7 +710,39 @@ def cmd_hf(args):
     from mpipe.audio import integrated_lufs, resample, true_peak_db, write_audio
     from mpipe.effects import brickwall
     from mpipe.hfaudio import (GenSettings, HFAudioGenerator, MODELS,
-                               estimate_minutes, lofi_prompt)
+                               cache_size_gb, download_model, estimate_minutes,
+                               is_downloaded, lofi_prompt)
+
+    if args.list_models:
+        log("MusicGen variants (download is what transformers actually pulls)\n")
+        log(f"  {'model':<24}{'download':>10}{'fp32':>8}{'fp16':>8}  {'on disk':<9}fits 6 GB?")
+        log(f"  {'-' * 24}{'-' * 10}{'-' * 8}{'-' * 8}  {'-' * 9}----------")
+        for key, spec in MODELS.items():
+            have = cache_size_gb(spec.repo, args.cache_dir)
+            fits = []
+            if spec.fits(6.0, "fp32"):
+                fits.append("fp32")
+            if spec.fits(6.0, "fp16"):
+                fits.append("fp16")
+            log(f"  {key:<24}{spec.download_gb:>7.2f} GB{spec.vram_fp32:>6.1f} GB"
+                f"{spec.vram_fp16:>6.1f} GB  {(f'{have:.1f} GB' if have else '-'):<9}"
+                f"{'/'.join(fits) if fits else 'NO'}")
+        log("\n  Download one with:  python pipeline.py hf --download <model>")
+        log("  All MusicGen weights are CC-BY-NC 4.0 - not for commercial use.")
+        return None
+
+    if args.download:
+        download_model(args.download if args.download is not True else args.model,
+                       cache_dir=args.cache_dir)
+        return None
+
+    if not is_downloaded(MODELS[args.model].repo, args.cache_dir):
+        spec = MODELS[args.model]
+        log(f"{spec.repo} is not downloaded yet ({spec.download_gb:.2f} GB).")
+        log(f"Fetching it now - or Ctrl+C and run: "
+            f"python pipeline.py hf --download {args.model}\n")
+        download_model(args.model, cache_dir=args.cache_dir)
+        log("")
 
     generator = HFAudioGenerator(args.model, dtype=args.dtype, device=args.device,
                                  cache_dir=args.cache_dir, quiet=args.quiet)
@@ -749,11 +788,17 @@ def cmd_hf(args):
     manifest.setdefault("tracks", [])
     write_manifest(run, manifest)
 
+    minutes = (args.hours * 60.0) if args.hours else args.minutes
     log(f"\nRun folder: {run}")
-    estimate = estimate_minutes(args.minutes * 60, generator.device,
-                                generator.dtype_label)
-    log(f"Rough guide: about {estimate:.0f} min per track, "
-        f"{estimate * args.count:.0f} min for all {args.count}\n")
+    estimate = estimate_minutes(minutes * 60, generator.device, generator.dtype_label)
+    log(f"Rough guide: about {_clock_short(estimate * 60)} per track, "
+        f"{_clock_short(estimate * 60 * args.count)} for all {args.count}")
+    if minutes * args.count > 20:
+        log("  Long job: each track streams to disk as it is made, so an "
+            "interruption\n  loses at most one chunk - rerun the same command "
+            "to resume.")
+    log("")
+    run_start = __import__("time").time()
 
     target_sr = args.samplerate
     made = 0
@@ -767,15 +812,18 @@ def cmd_hf(args):
                                             texture=args.texture)
         if args.use_presets and not args.prompt:
             prompt = f"{track['caption']}, {track['bpm']} bpm"
-        settings = GenSettings(seconds=args.minutes * 60.0, guidance=args.guidance,
+        settings = GenSettings(seconds=minutes * 60.0, guidance=args.guidance,
                                temperature=args.temperature, top_k=args.top_k,
                                top_p=args.top_p, seed=rng.randrange(2 ** 31),
                                overlap_seconds=args.overlap)
         log(f"[{i}/{args.count}] {track['title']}  |  {track['bpm']} BPM, "
-            f"{args.minutes:g} min")
+            f"{minutes:g} min")
         log(f"    {prompt}")
         try:
-            audio = generator.generate(prompt, settings, progress=not args.quiet)
+            audio, gen_report = generator.generate_to_file(
+                prompt, settings, raw / f"{i:02d}_{slug(track['title'])}",
+                progress=not args.quiet, resume=not args.no_resume,
+                label=track["title"])
         except KeyboardInterrupt:
             write_manifest(run, manifest)
             die("stopped by user (finished tracks are kept)")
@@ -815,16 +863,18 @@ def cmd_hf(args):
              album=args.album, track=i, bpm=track["bpm"],
              year=datetime.now().year)
         log(f"    -> {dest.name}  {fmt_time(len(audio) / target_sr)}  "
-            f"{after:.1f} LUFS  {peak_db:.2f} dBTP\n")
+            f"{after:.1f} LUFS  {peak_db:.2f} dBTP  "
+            f"({gen_report['chunks']} chunks, {_clock_short(gen_report['elapsed'])})\n")
         manifest["tracks"].append({
             "index": i, "title": track["title"], "file": dest.name, "status": "ok",
             "prompt": prompt, "bpm": track["bpm"], "lufs": round(float(after), 2),
             "true_peak_db": round(float(peak_db), 2),
-            "settings": settings.to_dict()})
+            "generation": gen_report, "settings": settings.to_dict()})
         write_manifest(run, manifest)
         made += 1
 
-    log(f"Done: {made}/{args.count} tracks in {raw}")
+    total = __import__("time").time() - run_start
+    log(f"Done: {made}/{args.count} tracks in {raw}  (total {_clock_short(total)})")
     if made:
         log(f"Next:  python pipeline.py song --run {run} --hours 1")
     return run
@@ -1291,6 +1341,14 @@ def add_hf_args(p):
     p.add_argument("--cache-dir", help="where to keep the downloaded weights")
     p.add_argument("--count", type=int, default=4, help="how many tracks")
     p.add_argument("--minutes", type=float, default=2.0, help="minutes per track")
+    p.add_argument("--hours", type=float, default=0,
+                   help="hours per track (overrides --minutes)")
+    p.add_argument("--download", nargs="?", const=True, default=None,
+                   metavar="MODEL", help="download weights and exit")
+    p.add_argument("--list-models", action="store_true",
+                   help="show every variant with download size and VRAM, then exit")
+    p.add_argument("--no-resume", action="store_true",
+                   help="start fresh instead of continuing an interrupted run")
     p.add_argument("--prompt", help="use this exact prompt for every track")
     p.add_argument("--use-presets", action="store_true",
                    help="build prompts from presets.json instead of the lofi template")

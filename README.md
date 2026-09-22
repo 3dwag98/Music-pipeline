@@ -158,9 +158,49 @@ card. No server, no ComfyUI — it loads the weights in-process.
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 pip install transformers
 
-python pipeline.py hf --selftest                 :: check your card first
-python pipeline.py hf --count 4 --minutes 2      :: then generate
+python pipeline.py hf --list-models              :: what fits, and what it costs
+python pipeline.py hf --download musicgen-medium :: fetch the weights
+python pipeline.py hf --selftest                 :: check your card
+python pipeline.py hf --count 4 --minutes 2      :: generate
 ```
+
+#### Downloading the models
+
+`--list-models` prints every variant with the download size, the VRAM it needs
+in each precision, how much is already on your disk, and whether it fits a 6 GB
+card:
+
+| Model | Download | fp32 | fp16 | Fits 6 GB |
+|---|---|---|---|---|
+| `musicgen-stereo-small` | 1.22 GB | 1.2 GB | 0.6 GB | both |
+| `musicgen-small` (default) | 2.36 GB | 2.4 GB | 1.2 GB | both |
+| **`musicgen-stereo-medium`** | **4.07 GB** | 4.1 GB | 2.0 GB | **both** |
+| `musicgen-medium` | 8.04 GB | 8.0 GB | 4.0 GB | fp16 only |
+| `musicgen-melody` | 6.23 GB | 6.2 GB | 3.1 GB | fp16 only |
+| `musicgen-stereo-large` | 6.93 GB | 6.9 GB | 3.5 GB | fp16 only |
+| `musicgen-large` | 13.72 GB | 13.7 GB | 6.9 GB | **no** |
+
+```bat
+python pipeline.py hf --download musicgen-stereo-medium
+python pipeline.py hf --count 4 --model musicgen-stereo-medium
+```
+
+Downloads also happen automatically the first time you use a model — `--download`
+just lets you do it deliberately, and shows the cost before it starts.
+
+Three things worth knowing:
+
+- **`musicgen-stereo-medium` is the sweet spot on your card.** Medium quality,
+  stereo, and at 4.07 GB it fits in **fp32** — so it does not depend on
+  16-series fp16 working at all.
+- **`musicgen-medium` needs fp16 on a 6 GB card.** 8 GB of fp32 weights will not
+  load. Run `--selftest --dtype fp16` before committing to a long job.
+- **`musicgen-large` does not fit**, in either precision. The table shows the
+  arithmetic rather than letting you discover it after a 13.7 GB download.
+
+The sizes above are what `from_pretrained` actually pulls. The Hub shows roughly
+double, because these repos also carry audiocraft-format `state_dict.bin` files
+that transformers never reads; `--download` skips them.
 
 **Run `--selftest` before anything long.** It generates a few seconds and checks
 the result is real audio rather than NaNs or silence — which is the actual
@@ -192,6 +232,49 @@ python pipeline.py hf --count 4 --dtype fp16     :: if it passed, use it
 ```
 
 If fp16 fails, the self-test says so in one line and tells you to use fp32.
+
+#### Long songs, and how to watch them
+
+Two ways to get length, and they are good at different things:
+
+```bat
+:: one continuous piece - the model plays straight through
+python pipeline.py hf --count 1 --minutes 30
+python pipeline.py hf --count 1 --hours 1
+
+:: several tracks arranged into hours - better for a long upload
+python pipeline.py hf --count 12 --minutes 3
+python pipeline.py song --hours 2 --spine 0.5
+```
+
+The second is usually what you want for a long video: twelve distinct pieces
+beat-matched into two hours reads as an album, where one unbroken hour from a
+300M model tends to wander.
+
+**Progress tracking** is on every run:
+
+```
+[1/2] Lazy Streetlights  |  76 BPM, 0.4 min
+    lofi hip hop, chill instrumental beat, soft muted electric piano, ...
+    [###########################-]  99.8%   23.9/24s audio  elapsed 01:41  eta 00:00
+    -> 01_lazy-streetlights.mp3  00:24  -14.0 LUFS  -1.00 dBTP  (1 chunks, 1m41s)
+
+Done: 2/2 tracks in runs/...  (total 3m12s)
+```
+
+Before it starts, it estimates the whole job so you can decide whether to begin.
+
+**Interruptions are survivable.** Each chunk is written to disk as it is
+generated, alongside a small state file. Kill the job, close the laptop, lose
+power — rerun the identical command and it resumes:
+
+```
+    resuming from 16s of 20s
+```
+
+You lose at most the chunk that was in flight. `--no-resume` forces a fresh
+start. This also means memory stays flat no matter how long the track is:
+nothing accumulates in RAM waiting to be written at the end.
 
 #### Longer than 30 seconds
 

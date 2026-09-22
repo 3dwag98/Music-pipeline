@@ -25,6 +25,7 @@ length
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from dataclasses import dataclass, asdict
 
 import numpy as np
@@ -49,30 +50,74 @@ class ModelSpec:
     commercial: bool
     sr: int
     stereo: bool
+    download_gb: float = 0.0
+    vram_fp32: float = 0.0
+    vram_fp16: float = 0.0
     note: str = ""
 
     def to_dict(self):
         return asdict(self)
 
+    def vram_for(self, dtype_label):
+        return self.vram_fp16 if dtype_label == "fp16" else self.vram_fp32
 
-#: Text-to-audio models worth pointing this at, smallest first.
+    def fits(self, vram_gb, dtype_label="fp16", headroom=1.0):
+        """Weights plus room for activations."""
+        need = self.vram_for(dtype_label) + headroom
+        return vram_gb >= need
+
+
+#: Every MusicGen variant, with the numbers that actually decide things.
+#: `download_gb` is what `from_pretrained` pulls - the repos also carry
+#: audiocraft-format `state_dict.bin` files that transformers never touches,
+#: so the repo size shown on the Hub is roughly double what you wait for.
+#: VRAM is the weights; add ~1 GB for activations at 30s of audio.
 MODELS = {
     "musicgen-small": ModelSpec(
         key="musicgen-small", repo="facebook/musicgen-small", params="300M decoder",
         licence="CC-BY-NC 4.0 (weights)", commercial=False, sr=32000, stereo=False,
-        note="The smallest model that genuinely makes music, and the one Meta "
-             "names for small GPUs. Its WEIGHTS are non-commercial - the MIT "
-             "licence on audiocraft's code does not carry over."),
+        download_gb=2.36, vram_fp32=2.4, vram_fp16=1.2,
+        note="The default. Smallest model that genuinely makes music; fits a "
+             "6 GB card in either precision."),
     "musicgen-stereo-small": ModelSpec(
         key="musicgen-stereo-small", repo="facebook/musicgen-stereo-small",
         params="300M decoder", licence="CC-BY-NC 4.0 (weights)", commercial=False,
-        sr=32000, stereo=True,
-        note="Same size, stereo output. Same non-commercial weights."),
+        sr=32000, stereo=True, download_gb=1.22, vram_fp32=1.2, vram_fp16=0.6,
+        note="Stereo, and the smallest download of the lot. Worth trying before "
+             "anything bigger."),
+    "musicgen-stereo-medium": ModelSpec(
+        key="musicgen-stereo-medium", repo="facebook/musicgen-stereo-medium",
+        params="1.5B decoder", licence="CC-BY-NC 4.0 (weights)", commercial=False,
+        sr=32000, stereo=True, download_gb=4.07, vram_fp32=4.1, vram_fp16=2.0,
+        note="The sweet spot on a 6 GB card: medium quality, stereo, and it "
+             "fits in fp32 - so it does not depend on 16-series fp16 working."),
     "musicgen-medium": ModelSpec(
         key="musicgen-medium", repo="facebook/musicgen-medium", params="1.5B decoder",
         licence="CC-BY-NC 4.0 (weights)", commercial=False, sr=32000, stereo=False,
-        note="Better, and too big to be comfortable in 6 GB at fp32."),
+        download_gb=8.04, vram_fp32=8.0, vram_fp16=4.0,
+        note="A clear quality step up from small. 8 GB in fp32 will NOT fit a "
+             "6 GB card, so this one needs fp16 - run --selftest --dtype fp16 "
+             "before committing to a long job."),
+    "musicgen-melody": ModelSpec(
+        key="musicgen-melody", repo="facebook/musicgen-melody", params="1.5B decoder",
+        licence="CC-BY-NC 4.0 (weights)", commercial=False, sr=32000, stereo=False,
+        download_gb=6.23, vram_fp32=6.2, vram_fp16=3.1,
+        note="Can be conditioned on a melody as well as text. fp16 on 6 GB."),
+    "musicgen-stereo-large": ModelSpec(
+        key="musicgen-stereo-large", repo="facebook/musicgen-stereo-large",
+        params="3.3B decoder", licence="CC-BY-NC 4.0 (weights)", commercial=False,
+        sr=32000, stereo=True, download_gb=6.93, vram_fp32=6.9, vram_fp16=3.5,
+        note="Large, stereo, and surprisingly compact because it ships "
+             "safetensors. fp16 only on 6 GB, and slow."),
+    "musicgen-large": ModelSpec(
+        key="musicgen-large", repo="facebook/musicgen-large", params="3.3B decoder",
+        licence="CC-BY-NC 4.0 (weights)", commercial=False, sr=32000, stereo=False,
+        download_gb=13.72, vram_fp32=13.7, vram_fp16=6.9,
+        note="Best quality of the family and does NOT fit a 6 GB card in "
+             "either precision - 6.9 GB of weights in fp16 before activations. "
+             "Listed so the arithmetic is visible rather than discovered."),
 }
+
 DEFAULT_MODEL = "musicgen-small"
 
 
@@ -133,7 +178,112 @@ def resolve_dtype(requested="auto", device=None):
     return torch.float16, "fp16", f"{name} handles fp16 well"
 
 
+# ---------------------------------------------------------------- download ---
+
+def cache_size_gb(repo, cache_dir=None):
+    """How much of this model is already on disk."""
+    from huggingface_hub import scan_cache_dir
+    try:
+        cache = scan_cache_dir(cache_dir) if cache_dir else scan_cache_dir()
+    except Exception:
+        return 0.0
+    for entry in cache.repos:
+        if entry.repo_id == repo:
+            return entry.size_on_disk / 1e9
+    return 0.0
+
+
+def is_downloaded(repo, cache_dir=None):
+    from huggingface_hub import try_to_load_from_cache
+    return isinstance(try_to_load_from_cache(repo, "config.json",
+                                             cache_dir=cache_dir), str)
+
+
+def _has_safetensors(repo):
+    """Does this repo publish safetensors?  If so, never also pull the .bin."""
+    try:
+        from huggingface_hub import HfApi
+        files = [f.rfilename for f in HfApi().model_info(repo).siblings]
+    except Exception:
+        return False
+    return any(f.endswith(".safetensors") for f in files)
+
+
+def download_model(model_key, cache_dir=None, progress=True):
+    """Fetch the weights, showing what it will cost before it starts."""
+    spec = MODELS.get(model_key)
+    if spec is None:
+        die(f"unknown model '{model_key}'. Available: {', '.join(MODELS)}")
+    from huggingface_hub import snapshot_download
+
+    already = cache_size_gb(spec.repo, cache_dir)
+    if progress:
+        log(f"{spec.repo}")
+        log(f"  parameters   {spec.params}")
+        log(f"  download     {spec.download_gb:.2f} GB"
+            + (f"  ({already:.2f} GB already cached)" if already else ""))
+        log(f"  VRAM         {spec.vram_fp32:.1f} GB fp32 / {spec.vram_fp16:.1f} GB fp16")
+        log(f"  licence      {spec.licence}")
+        if not spec.commercial:
+            warn("these weights are NOT licensed for commercial use")
+        log("")
+    t0 = time.time()
+    # Only what transformers loads.  Two traps here: the audiocraft-format
+    # `state_dict.bin` files in these repos are large and never read, and
+    # several repos carry BOTH safetensors and .bin copies of the same weights -
+    # allowing both patterns downloads the model twice.
+    patterns = ["*.json", "*.model", "*.txt"]
+    patterns.append("*.safetensors" if _has_safetensors(spec.repo)
+                    else "pytorch_model*.bin")
+    path = snapshot_download(
+        spec.repo, cache_dir=cache_dir, allow_patterns=patterns,
+        ignore_patterns=["state_dict.bin", "compression_state_dict.bin"])
+    if progress:
+        log(f"  ready in {time.time() - t0:.0f}s -> {path}")
+    return path
+
+
 # -------------------------------------------------------------- generation ---
+
+class Progress:
+    """Percentage, elapsed and ETA for a long generation."""
+
+    def __init__(self, total_seconds, label="", width=28, enabled=True):
+        self.total = max(1e-6, float(total_seconds))
+        self.label = label
+        self.width = width
+        self.enabled = enabled
+        self.start = time.time()
+        self.made = 0.0
+
+    def update(self, made_seconds, note=""):
+        self.made = float(made_seconds)
+        if not self.enabled:
+            return
+        frac = min(1.0, self.made / self.total)
+        elapsed = time.time() - self.start
+        rate = self.made / elapsed if elapsed > 0 and self.made > 0 else 0.0
+        remaining = (self.total - self.made) / rate if rate > 0 else 0.0
+        filled = int(self.width * frac)
+        bar = "#" * filled + "-" * (self.width - filled)
+        log(f"    [{bar}] {frac * 100:5.1f}%  "
+            f"{self.made:6.1f}/{self.total:.0f}s audio  "
+            f"elapsed {_clock(elapsed)}  eta {_clock(remaining)}"
+            + (f"  {note}" if note else ""))
+
+    def done(self):
+        elapsed = time.time() - self.start
+        speed = self.made / elapsed if elapsed > 0 else 0.0
+        return {"elapsed": round(elapsed, 1),
+                "realtime_factor": round(1.0 / speed, 2) if speed > 0 else None}
+
+
+def _clock(seconds):
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
+
 
 @dataclass
 class GenSettings:
@@ -315,6 +465,108 @@ class HFAudioGenerator:
         audio = np.concatenate(pieces, axis=0)
         want_frames = int(target * self.sample_rate)
         return audio[:want_frames] if len(audio) > want_frames else audio
+
+    # -------------------------------------------------- long-form to disk --
+    def generate_to_file(self, prompt, settings: GenSettings, out_path,
+                         progress=True, resume=True, label=""):
+        """Generate straight to disk, chunk by chunk.
+
+        Holding an hour of audio in RAM to write it at the end is 700 MB and
+        loses everything if the job is interrupted.  Writing each chunk as it
+        arrives keeps memory flat regardless of length and makes the run
+        resumable: a partial file plus its state sidecar is enough to pick up
+        where it stopped.
+        """
+        import json
+        import soundfile as sf
+
+        out_path = Path(out_path)
+        partial = out_path.with_suffix(".partial.wav")
+        state_file = out_path.with_suffix(".partial.json")
+        target = float(settings.seconds)
+        sr = self.sample_rate
+
+        made = 0.0
+        tail = None
+        index = 0
+        fingerprint = {"prompt": prompt, "model": self.spec.repo,
+                       "seed": settings.seed, "sr": sr}
+        if resume and partial.exists() and state_file.exists():
+            try:
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                state = {}
+            if state.get("fingerprint") == fingerprint:
+                info = sf.info(str(partial))
+                made = info.duration
+                index = int(state.get("index", 0))
+                if made >= target - 0.05:
+                    log(f"    already complete ({made:.0f}s), finishing up")
+                else:
+                    log(f"    resuming from {made:.0f}s of {target:.0f}s")
+                    with sf.SoundFile(str(partial)) as fh:
+                        back = min(fh.frames, int(settings.overlap_seconds * sr))
+                        fh.seek(max(0, fh.frames - back))
+                        tail = fh.read(back, dtype="float32", always_2d=True)
+            else:
+                log("    partial file is from a different prompt; starting over")
+                partial.unlink(missing_ok=True)
+                state_file.unlink(missing_ok=True)
+
+        channels = 2 if self.spec.stereo else 1
+        mode = "r+" if (partial.exists() and made > 0) else "w"
+        writer = sf.SoundFile(str(partial), mode, samplerate=sr,
+                              channels=channels, subtype="FLOAT") \
+            if mode == "w" else sf.SoundFile(str(partial), "r+")
+        if mode == "r+":
+            writer.seek(0, sf.SEEK_END)
+        bar = Progress(target, label=label, enabled=progress and not self.quiet)
+        bar.made = made
+
+        try:
+            while True:
+                remaining = target - made
+                if remaining < (self.MIN_CONTINUATION_SECONDS if index else 0.05):
+                    break
+                want = min(MAX_CHUNK_SECONDS, remaining)
+                if tail is not None:
+                    want = min(MAX_CHUNK_SECONDS,
+                               remaining + settings.overlap_seconds)
+                step = GenSettings(**{**settings.to_dict(),
+                                      "seed": (settings.seed + index)
+                                      if settings.seed else 0})
+                chunk = self._generate_once(prompt, want, step, audio_prompt=tail)
+                if tail is not None:
+                    chunk = chunk[min(len(chunk) - 1, len(tail)):]
+                if len(chunk) == 0:
+                    break
+                writer.write(chunk if channels > 1 else chunk[:, 0])
+                writer.flush()
+                made += len(chunk) / sr
+                index += 1
+                state_file.write_text(json.dumps(
+                    {"fingerprint": fingerprint, "index": index,
+                     "seconds": round(made, 3), "target": target}), encoding="utf-8")
+                bar.update(min(made, target))
+                overlap = int(settings.overlap_seconds * sr)
+                tail = chunk[-overlap:] if len(chunk) >= overlap else chunk
+                if index > 2000:
+                    warn("stopping: too many chunks without reaching the target")
+                    break
+        finally:
+            writer.close()
+
+        if made <= 0:
+            raise RuntimeError("the model produced no audio")
+        audio, _ = sf.read(str(partial), dtype="float32", always_2d=True)
+        want_frames = int(target * sr)
+        if len(audio) > want_frames:
+            audio = audio[:want_frames]
+        report = {"seconds": round(len(audio) / sr, 2), "chunks": index,
+                  "samplerate": sr, **bar.done()}
+        partial.unlink(missing_ok=True)
+        state_file.unlink(missing_ok=True)
+        return audio, report
 
     # ------------------------------------------------------------ selftest --
     def selftest(self, seconds=3.0):

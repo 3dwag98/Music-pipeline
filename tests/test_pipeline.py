@@ -848,6 +848,34 @@ def test_hfaudio_logic():
     check("mastering holds the true-peak ceiling",
           true_peak_db(fixed, sr) <= -0.9, f"{true_peak_db(fixed, sr):.2f} dBTP")
 
+    # the model table is the thing people plan a download around, so the
+    # numbers and the fits/does-not-fit arithmetic have to be right
+    for key, spec in MODELS.items():
+        check(f"{key} states its download size", spec.download_gb > 0,
+              str(spec.download_gb))
+        check(f"{key} states its VRAM", spec.vram_fp32 > 0 and spec.vram_fp16 > 0)
+        check(f"{key} fp16 is lighter than fp32", spec.vram_fp16 < spec.vram_fp32)
+    check("small fits 6 GB in fp32", MODELS["musicgen-small"].fits(6.0, "fp32"))
+    check("medium does NOT fit 6 GB in fp32",
+          not MODELS["musicgen-medium"].fits(6.0, "fp32"))
+    check("medium fits 6 GB in fp16", MODELS["musicgen-medium"].fits(6.0, "fp16"))
+    check("large fits 6 GB in neither",
+          not MODELS["musicgen-large"].fits(6.0, "fp16")
+          and not MODELS["musicgen-large"].fits(6.0, "fp32"))
+    check("stereo-medium fits 6 GB in fp32 (the sweet spot)",
+          MODELS["musicgen-stereo-medium"].fits(6.0, "fp32"))
+
+    from mpipe.hfaudio import Progress, _clock
+    check("clock formats minutes", _clock(125) == "02:05", _clock(125))
+    check("clock formats hours", _clock(3725) == "1:02:05", _clock(3725))
+    bar = Progress(100, enabled=False)
+    bar.start -= 50
+    bar.update(25)
+    stats = bar.done()
+    check("progress reports a realtime factor",
+          stats["realtime_factor"] and stats["realtime_factor"] > 1,
+          str(stats))
+
     import pipeline
     parser_flags = [a for a in dir(pipeline) if a == "add_hf_args"]
     check("hf exposes its own loudness controls", bool(parser_flags))
@@ -856,6 +884,10 @@ def test_hfaudio_logic():
     pipeline.add_hf_args(probe)
     opts = {a.dest for a in probe._actions}
     check("hf takes --lufs and --peak", {"lufs", "peak"} <= opts, str(sorted(opts))[:90])
+    check("hf can download and list models",
+          {"download", "list_models"} <= opts, str(sorted(opts))[:90])
+    check("hf takes --hours and --no-resume",
+          {"hours", "no_resume"} <= opts, str(sorted(opts))[:90])
 
 
 def test_hfaudio_model(tmp):
@@ -949,6 +981,70 @@ def test_hfaudio_model(tmp):
         hfaudio.MAX_CHUNK_SECONDS = original_limit
     check("a sliver does not trigger another pass", calls["n"] == 1,
           f"{calls['n']} model calls for 2.2s at a 2.0s chunk limit")
+
+    # streaming to disk: the partial must survive an interruption and resume,
+    # or an hours-long job loses everything when the machine hiccups
+    import soundfile as _sf
+    out = tmp / "streamed.wav"
+    for leftover in (out.with_suffix(".partial.wav"), out.with_suffix(".partial.json")):
+        leftover.unlink(missing_ok=True)
+    try:
+        hfaudio.MAX_CHUNK_SECONDS = 1.5
+        audio, rep = generator.generate_to_file(
+            lofi_prompt_short(), GenSettings(seconds=3.0, seed=4, overlap_seconds=0.5),
+            out, progress=False)
+    finally:
+        hfaudio.MAX_CHUNK_SECONDS = original_limit
+    check("streamed generation returns audio", len(audio) > 0 and audio.ndim == 2)
+    check("streamed generation reports chunks and timing",
+          rep["chunks"] >= 2 and rep["elapsed"] > 0, str(rep))
+    check("partial files are cleaned up on success",
+          not out.with_suffix(".partial.wav").exists()
+          and not out.with_suffix(".partial.json").exists())
+
+    # now fake an interruption and check it picks up rather than restarting
+    import json as _json
+    partial = out.with_suffix(".partial.wav")
+    sr_gen = generator.sample_rate
+    _sf.write(str(partial), audio[: int(1.5 * sr_gen)], sr_gen, subtype="FLOAT")
+    fingerprint = {"prompt": lofi_prompt_short(), "model": generator.spec.repo,
+                   "seed": 4, "sr": sr_gen}
+    out.with_suffix(".partial.json").write_text(
+        _json.dumps({"fingerprint": fingerprint, "index": 1, "seconds": 1.5,
+                     "target": 3.0}), encoding="utf-8")
+    calls["n"] = 0
+    generator._generate_once = counting
+    try:
+        hfaudio.MAX_CHUNK_SECONDS = 1.5
+        resumed, rep2 = generator.generate_to_file(
+            lofi_prompt_short(), GenSettings(seconds=3.0, seed=4, overlap_seconds=0.5),
+            out, progress=False, resume=True)
+    finally:
+        generator._generate_once = real_once
+        hfaudio.MAX_CHUNK_SECONDS = original_limit
+    check("resume continues instead of restarting", calls["n"] < rep["chunks"],
+          f"{calls['n']} new calls vs {rep['chunks']} from scratch")
+    check("resumed output reaches the target",
+          abs(len(resumed) / sr_gen - 3.0) < 0.6, f"{len(resumed) / sr_gen:.2f}s")
+
+    # a partial from a DIFFERENT prompt must not be reused
+    _sf.write(str(partial), audio[: int(1.5 * sr_gen)], sr_gen, subtype="FLOAT")
+    out.with_suffix(".partial.json").write_text(
+        _json.dumps({"fingerprint": {**fingerprint, "prompt": "something else"},
+                     "index": 1, "seconds": 1.5, "target": 3.0}), encoding="utf-8")
+    calls["n"] = 0
+    generator._generate_once = counting
+    try:
+        hfaudio.MAX_CHUNK_SECONDS = 1.5
+        generator.generate_to_file(
+            lofi_prompt_short(), GenSettings(seconds=3.0, seed=4, overlap_seconds=0.5),
+            out, progress=False, resume=True)
+    finally:
+        generator._generate_once = real_once
+        hfaudio.MAX_CHUNK_SECONDS = original_limit
+    check("a mismatched partial is discarded, not resumed",
+          calls["n"] >= rep["chunks"],
+          f"{calls['n']} calls - should have started over")
 
 
 def lofi_prompt_short():
