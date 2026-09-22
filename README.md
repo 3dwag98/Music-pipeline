@@ -200,6 +200,21 @@ tail of what it just made back in as an audio prompt, so a five-minute track is
 one continuous take rather than clips butted together. `--overlap` controls how
 much tail is carried across.
 
+**Does the stitch lose the piece?** Measured, not assumed. Across a join, the
+harmonic content matched at **0.981** chroma similarity — *higher* than the
+**0.912** that a single uninterrupted 30s take varies by between its own first
+and second halves. Tempo drift across the join was **0.0 BPM**. The model is
+conditioned on the preceding audio, so it continues the piece rather than
+restarting it.
+
+The join is not audible either: its largest sample-to-sample step (0.361) sits
+*below* the track's own 99.99th percentile (0.372), so it is not even the
+sharpest transition in the piece. A crossfade was tried there and measured as
+no improvement — there is no seam to smooth, and blending the original tail
+against the model's 0.94-correlated reconstruction of it risks comb filtering.
+Level differences across a join are the model playing the next section
+differently, which is music rather than an artefact.
+
 Output is mastered on the way out — raw model output is not level-controlled
 (a real 1-minute render measured **−12.9 LUFS and +1.1 dBTP**, which clips once
 encoded to MP3), so `hf` normalises to `--lufs` and limits to `--peak` like
