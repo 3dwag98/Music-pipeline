@@ -27,6 +27,8 @@ import argparse
 import json
 import random
 import sys
+
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -435,6 +437,13 @@ def cmd_art(args):
     return run
 
 
+def _clock_short(seconds):
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}h{m:02d}m" if h else (f"{m}m{sec:02d}s" if m else f"{sec}s")
+
+
 def _parse_size(size):
     try:
         width, height = (int(v) for v in str(size).lower().split("x"))
@@ -691,6 +700,184 @@ def _write_report(run, name, report):
     payload["chapters"] = [[round(t, 2), n] for t, n in report.get("chapters", [])]
     path = Path(run) / f"{name}_report.json"
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# hf - local text-to-audio model (the smallest one that makes music)
+# ---------------------------------------------------------------------------
+
+def cmd_hf(args):
+    from mpipe.audio import integrated_lufs, resample, true_peak_db, write_audio
+    from mpipe.effects import brickwall
+    from mpipe.hfaudio import (GenSettings, HFAudioGenerator, MODELS,
+                               cache_size_gb, download_model, estimate_minutes,
+                               is_downloaded, lofi_prompt)
+
+    if args.list_models:
+        log("MusicGen variants (download is what transformers actually pulls)\n")
+        log(f"  {'model':<24}{'download':>10}{'fp32':>8}{'fp16':>8}  {'on disk':<9}fits 6 GB?")
+        log(f"  {'-' * 24}{'-' * 10}{'-' * 8}{'-' * 8}  {'-' * 9}----------")
+        for key, spec in MODELS.items():
+            have = cache_size_gb(spec.repo, args.cache_dir)
+            fits = []
+            if spec.fits(6.0, "fp32"):
+                fits.append("fp32")
+            if spec.fits(6.0, "fp16"):
+                fits.append("fp16")
+            log(f"  {key:<24}{spec.download_gb:>7.2f} GB{spec.vram_fp32:>6.1f} GB"
+                f"{spec.vram_fp16:>6.1f} GB  {(f'{have:.1f} GB' if have else '-'):<9}"
+                f"{'/'.join(fits) if fits else 'NO'}")
+        log("\n  Download one with:  python pipeline.py hf --download <model>")
+        log("  All MusicGen weights are CC-BY-NC 4.0 - not for commercial use.")
+        return None
+
+    if args.download:
+        download_model(args.download if args.download is not True else args.model,
+                       cache_dir=args.cache_dir)
+        return None
+
+    if not is_downloaded(MODELS[args.model].repo, args.cache_dir):
+        spec = MODELS[args.model]
+        log(f"{spec.repo} is not downloaded yet ({spec.download_gb:.2f} GB).")
+        log(f"Fetching it now - or Ctrl+C and run: "
+            f"python pipeline.py hf --download {args.model}\n")
+        download_model(args.model, cache_dir=args.cache_dir)
+        log("")
+
+    generator = HFAudioGenerator(args.model, dtype=args.dtype, device=args.device,
+                                 cache_dir=args.cache_dir, quiet=args.quiet)
+    generator.load()
+
+    if args.selftest:
+        log("\nSelf-test: generating a short clip and checking it is real audio...")
+        result = generator.selftest(seconds=args.selftest_seconds)
+        log("")
+        for key in ("model", "device", "dtype", "seconds", "elapsed", "finite",
+                    "peak", "rms"):
+            log(f"  {key:<9} {result[key]}")
+        log("")
+        _bullet("!" if not result["ok"] else "+", result["verdict"])
+        if not result["ok"]:
+            log("")
+            log("  This is exactly what the self-test is for: the output is not")
+            log("  usable audio in this precision.  Re-run with --dtype fp32.")
+            return None
+        estimate = estimate_minutes(args.minutes * 60, generator.device,
+                                    generator.dtype_label)
+        log(f"\n  Rough guide: {args.minutes:g} minutes of audio will take around "
+            f"{estimate:.0f} minutes per track on this setup.")
+        return None
+
+    presets = load_presets(args.presets)
+    seed = args.seed if args.seed is not None else random.randrange(2 ** 31)
+    run = Path(args.run) if args.run else new_run(f"hf_{args.model}")
+    raw = run / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+
+    spec_info = MODELS[args.model]
+    manifest = read_manifest(run)
+    manifest.update({
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "engine": "hf-text-to-audio", "version": __version__,
+        "model": spec_info.repo, "model_licence": spec_info.licence,
+        "commercial_use": spec_info.commercial,
+        "dtype": generator.dtype_label, "device": generator.device,
+        "run_seed": seed, "minutes_each": args.minutes,
+        "source": f"generated locally by {spec_info.repo}",
+    })
+    manifest.setdefault("tracks", [])
+    write_manifest(run, manifest)
+
+    minutes = (args.hours * 60.0) if args.hours else args.minutes
+    log(f"\nRun folder: {run}")
+    estimate = estimate_minutes(minutes * 60, generator.device, generator.dtype_label)
+    log(f"Rough guide: about {_clock_short(estimate * 60)} per track, "
+        f"{_clock_short(estimate * 60 * args.count)} for all {args.count}")
+    if minutes * args.count > 20:
+        log("  Long job: each track streams to disk as it is made, so an "
+            "interruption\n  loses at most one chunk - rerun the same command "
+            "to resume.")
+    log("")
+    run_start = __import__("time").time()
+
+    target_sr = args.samplerate
+    made = 0
+    for i in range(1, args.count + 1):
+        used = set()
+        rng = random.Random((seed * 1_000_003 + i * 7_919) % (2 ** 63))
+        track = build_track_spec(presets, args.genre, args.mood, rng, used,
+                                 bpm=args.bpm, key=args.key, extra=args.extra)
+        prompt = args.prompt or lofi_prompt(track["bpm"], extra=args.extra,
+                                            mood=args.mood, rng=rng,
+                                            texture=args.texture)
+        if args.use_presets and not args.prompt:
+            prompt = f"{track['caption']}, {track['bpm']} bpm"
+        settings = GenSettings(seconds=minutes * 60.0, guidance=args.guidance,
+                               temperature=args.temperature, top_k=args.top_k,
+                               top_p=args.top_p, seed=rng.randrange(2 ** 31),
+                               overlap_seconds=args.overlap)
+        log(f"[{i}/{args.count}] {track['title']}  |  {track['bpm']} BPM, "
+            f"{minutes:g} min")
+        log(f"    {prompt}")
+        try:
+            audio, gen_report = generator.generate_to_file(
+                prompt, settings, raw / f"{i:02d}_{slug(track['title'])}",
+                progress=not args.quiet, resume=not args.no_resume,
+                label=track["title"])
+        except KeyboardInterrupt:
+            write_manifest(run, manifest)
+            die("stopped by user (finished tracks are kept)")
+        except Exception as exc:
+            log(f"    failed: {exc}")
+            manifest["tracks"].append({"index": i, "status": "failed",
+                                       "error": str(exc), "prompt": prompt})
+            write_manifest(run, manifest)
+            continue
+
+        sr = generator.sample_rate
+        if sr != target_sr:
+            audio = resample(audio, sr, target_sr)
+        if audio.ndim == 1:
+            audio = audio[:, None]
+        if audio.shape[1] == 1:
+            audio = np.repeat(audio, 2, axis=1)
+
+        # Master it like every other generator here does.  Raw model output is
+        # not level-controlled - measured at -12.9 LUFS and +1.1 dBTP, which
+        # clips once it is encoded to MP3.
+        measured = integrated_lufs(audio, target_sr)
+        if np.isfinite(measured):
+            audio = audio * (10 ** ((args.lufs - measured) / 20.0))
+        audio = brickwall(audio, target_sr, ceiling_db=args.peak, true_peak=True)
+        after = integrated_lufs(audio, target_sr)
+        drift = args.lufs - after
+        if np.isfinite(after) and abs(drift) > 0.4:
+            audio = brickwall(audio * (10 ** (drift / 20.0)), target_sr,
+                              ceiling_db=args.peak, true_peak=True)
+            after = integrated_lufs(audio, target_sr)
+        peak_db = true_peak_db(audio, target_sr)
+
+        dest = _out_path(raw / f"{i:02d}_{slug(track['title'])}", args)
+        write_audio(dest, audio, target_sr, mp3_quality=_quality(args))
+        _tag(dest, args, title=track["title"], artist=args.artist,
+             album=args.album, track=i, bpm=track["bpm"],
+             year=datetime.now().year)
+        log(f"    -> {dest.name}  {fmt_time(len(audio) / target_sr)}  "
+            f"{after:.1f} LUFS  {peak_db:.2f} dBTP  "
+            f"({gen_report['chunks']} chunks, {_clock_short(gen_report['elapsed'])})\n")
+        manifest["tracks"].append({
+            "index": i, "title": track["title"], "file": dest.name, "status": "ok",
+            "prompt": prompt, "bpm": track["bpm"], "lufs": round(float(after), 2),
+            "true_peak_db": round(float(peak_db), 2),
+            "generation": gen_report, "settings": settings.to_dict()})
+        write_manifest(run, manifest)
+        made += 1
+
+    total = __import__("time").time() - run_start
+    log(f"Done: {made}/{args.count} tracks in {raw}  (total {_clock_short(total)})")
+    if made:
+        log(f"Next:  python pipeline.py song --run {run} --hours 1")
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -1144,6 +1331,50 @@ def add_output_args(p):
     p.add_argument("--no-tags", action="store_true", help="do not write metadata")
 
 
+def add_hf_args(p):
+    p.add_argument("--model", default="musicgen-small",
+                   help="musicgen-small (default, smallest), musicgen-stereo-small, "
+                        "musicgen-medium")
+    p.add_argument("--dtype", default="auto", choices=["auto", "fp16", "fp32"],
+                   help="auto picks fp32 on 16-series cards; fp16 forces half precision")
+    p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    p.add_argument("--cache-dir", help="where to keep the downloaded weights")
+    p.add_argument("--count", type=int, default=4, help="how many tracks")
+    p.add_argument("--minutes", type=float, default=2.0, help="minutes per track")
+    p.add_argument("--hours", type=float, default=0,
+                   help="hours per track (overrides --minutes)")
+    p.add_argument("--download", nargs="?", const=True, default=None,
+                   metavar="MODEL", help="download weights and exit")
+    p.add_argument("--list-models", action="store_true",
+                   help="show every variant with download size and VRAM, then exit")
+    p.add_argument("--no-resume", action="store_true",
+                   help="start fresh instead of continuing an interrupted run")
+    p.add_argument("--prompt", help="use this exact prompt for every track")
+    p.add_argument("--use-presets", action="store_true",
+                   help="build prompts from presets.json instead of the lofi template")
+    p.add_argument("--genre", default="lofi", help="preset genre for prompt wording")
+    p.add_argument("--mood", help="mood preset or free text")
+    p.add_argument("--extra", help="extra words appended to every prompt")
+    p.add_argument("--texture", action="store_true",
+                   help="ask for vinyl crackle in the prompt (off by default - "
+                        "naming it makes the model foreground the artefact)")
+    p.add_argument("--bpm", type=int, help="fixed tempo in the prompt")
+    p.add_argument("--key", help="fixed key in the prompt")
+    p.add_argument("--guidance", type=float, default=3.0, help="classifier-free guidance")
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--top-k", type=int, default=250)
+    p.add_argument("--top-p", type=float, default=0.0)
+    p.add_argument("--overlap", type=float, default=5.0,
+                   help="seconds fed back when continuing past the model's limit")
+    p.add_argument("--seed", type=int)
+    p.add_argument("--presets", default=str(DEFAULT_PRESETS))
+    p.add_argument("--lufs", type=float, default=-14.0, help="loudness target")
+    p.add_argument("--peak", type=float, default=-1.0, help="true-peak ceiling in dBTP")
+    p.add_argument("--selftest", action="store_true",
+                   help="check this card produces real audio in the chosen precision")
+    p.add_argument("--selftest-seconds", type=float, default=3.0)
+
+
 def add_lofify_args(p):
     p.add_argument("input", nargs="+", help="songs to lofi (files, a folder, or a .txt list)")
     p.add_argument("--preset", default="classic",
@@ -1371,6 +1602,12 @@ def main(argv=None):
     add_generate_args(p)
     add_comfy_args(p)
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("hf", help="generate lofi with a local Hugging Face model")
+    add_common(p)
+    add_hf_args(p)
+    add_output_args(p)
+    p.set_defaults(func=cmd_hf)
 
     p = sub.add_parser("lofify", help="turn songs you already have into lofi")
     add_common(p)

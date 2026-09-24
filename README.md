@@ -149,6 +149,161 @@ caption LLM, CPU offload, float32) and backs up any existing `.env` first.
 No GPU handy? `python mock_server.py` in a second terminal fakes the API so you
 can rehearse the whole flow.
 
+### `hf` — a local Hugging Face model
+
+The smallest text-to-audio model that genuinely makes music, running on your own
+card. No server, no ComfyUI — it loads the weights in-process.
+
+```bat
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install transformers
+
+python pipeline.py hf --list-models              :: what fits, and what it costs
+python pipeline.py hf --download musicgen-medium :: fetch the weights
+python pipeline.py hf --selftest                 :: check your card
+python pipeline.py hf --count 4 --minutes 2      :: generate
+```
+
+#### Downloading the models
+
+`--list-models` prints every variant with the download size, the VRAM it needs
+in each precision, how much is already on your disk, and whether it fits a 6 GB
+card:
+
+| Model | Download | fp32 | fp16 | Fits 6 GB |
+|---|---|---|---|---|
+| `musicgen-stereo-small` | 1.22 GB | 1.2 GB | 0.6 GB | both |
+| `musicgen-small` (default) | 2.36 GB | 2.4 GB | 1.2 GB | both |
+| **`musicgen-stereo-medium`** | **4.07 GB** | 4.1 GB | 2.0 GB | **both** |
+| `musicgen-medium` | 8.04 GB | 8.0 GB | 4.0 GB | fp16 only |
+| `musicgen-melody` | 6.23 GB | 6.2 GB | 3.1 GB | fp16 only |
+| `musicgen-stereo-large` | 6.93 GB | 6.9 GB | 3.5 GB | fp16 only |
+| `musicgen-large` | 13.72 GB | 13.7 GB | 6.9 GB | **no** |
+
+```bat
+python pipeline.py hf --download musicgen-stereo-medium
+python pipeline.py hf --count 4 --model musicgen-stereo-medium
+```
+
+Downloads also happen automatically the first time you use a model — `--download`
+just lets you do it deliberately, and shows the cost before it starts.
+
+Three things worth knowing:
+
+- **`musicgen-stereo-medium` is the sweet spot on your card.** Medium quality,
+  stereo, and at 4.07 GB it fits in **fp32** — so it does not depend on
+  16-series fp16 working at all.
+- **`musicgen-medium` needs fp16 on a 6 GB card.** 8 GB of fp32 weights will not
+  load. Run `--selftest --dtype fp16` before committing to a long job.
+- **`musicgen-large` does not fit**, in either precision. The table shows the
+  arithmetic rather than letting you discover it after a 13.7 GB download.
+
+The sizes above are what `from_pretrained` actually pulls. The Hub shows roughly
+double, because these repos also carry audiocraft-format `state_dict.bin` files
+that transformers never reads; `--download` skips them.
+
+**Run `--selftest` before anything long.** It generates a few seconds and checks
+the result is real audio rather than NaNs or silence — which is the actual
+answer to the fp16 question below, measured on your card instead of guessed.
+
+| Model | Size | Licence | Commercial? |
+|---|---|---|---|
+| `musicgen-small` (default) | 300M decoder | CC-BY-NC 4.0 | **no** |
+| `musicgen-stereo-small` | 300M decoder | CC-BY-NC 4.0 | **no** |
+| `musicgen-medium` | 1.5B decoder | CC-BY-NC 4.0 | **no** |
+
+> **These weights are non-commercial.** MusicGen's *code* is MIT but its
+> *weights* are CC-BY-NC 4.0, and a monetised channel is commercial use. This
+> backend prints that warning every time it loads. If you intend to earn from
+> the output, use `lofi` (the built-in engine) or ACE-Step instead — see
+> [`MONETIZATION.md`](MONETIZATION.md) and `pipeline.py models`.
+
+#### fp16 on a GTX 1660 Ti
+
+`--dtype auto` (the default) picks **fp32** on 16-series cards, because Turing
+TU116's half-precision path is known to produce NaNs. That is well documented
+for *diffusion* models; MusicGen is an autoregressive transformer, so it may be
+perfectly fine — which is why `--dtype fp16` still works and `--selftest` exists
+to settle it on your hardware:
+
+```bat
+python pipeline.py hf --selftest --dtype fp16    :: does half precision work here?
+python pipeline.py hf --count 4 --dtype fp16     :: if it passed, use it
+```
+
+If fp16 fails, the self-test says so in one line and tells you to use fp32.
+
+#### Long songs, and how to watch them
+
+Two ways to get length, and they are good at different things:
+
+```bat
+:: one continuous piece - the model plays straight through
+python pipeline.py hf --count 1 --minutes 30
+python pipeline.py hf --count 1 --hours 1
+
+:: several tracks arranged into hours - better for a long upload
+python pipeline.py hf --count 12 --minutes 3
+python pipeline.py song --hours 2 --spine 0.5
+```
+
+The second is usually what you want for a long video: twelve distinct pieces
+beat-matched into two hours reads as an album, where one unbroken hour from a
+300M model tends to wander.
+
+**Progress tracking** is on every run:
+
+```
+[1/2] Lazy Streetlights  |  76 BPM, 0.4 min
+    lofi hip hop, chill instrumental beat, soft muted electric piano, ...
+    [###########################-]  99.8%   23.9/24s audio  elapsed 01:41  eta 00:00
+    -> 01_lazy-streetlights.mp3  00:24  -14.0 LUFS  -1.00 dBTP  (1 chunks, 1m41s)
+
+Done: 2/2 tracks in runs/...  (total 3m12s)
+```
+
+Before it starts, it estimates the whole job so you can decide whether to begin.
+
+**Interruptions are survivable.** Each chunk is written to disk as it is
+generated, alongside a small state file. Kill the job, close the laptop, lose
+power — rerun the identical command and it resumes:
+
+```
+    resuming from 16s of 20s
+```
+
+You lose at most the chunk that was in flight. `--no-resume` forces a fresh
+start. This also means memory stays flat no matter how long the track is:
+nothing accumulates in RAM waiting to be written at the end.
+
+#### Longer than 30 seconds
+
+MusicGen generates about 30s per call. Anything longer is built by feeding the
+tail of what it just made back in as an audio prompt, so a five-minute track is
+one continuous take rather than clips butted together. `--overlap` controls how
+much tail is carried across.
+
+**Does the stitch lose the piece?** Measured, not assumed. Across a join, the
+harmonic content matched at **0.981** chroma similarity — *higher* than the
+**0.912** that a single uninterrupted 30s take varies by between its own first
+and second halves. Tempo drift across the join was **0.0 BPM**. The model is
+conditioned on the preceding audio, so it continues the piece rather than
+restarting it.
+
+The join is not audible either: its largest sample-to-sample step (0.361) sits
+*below* the track's own 99.99th percentile (0.372), so it is not even the
+sharpest transition in the piece. A crossfade was tried there and measured as
+no improvement — there is no seam to smooth, and blending the original tail
+against the model's 0.94-correlated reconstruction of it risks comb filtering.
+Level differences across a join are the model playing the next section
+differently, which is music rather than an artefact.
+
+Output is mastered on the way out — raw model output is not level-controlled
+(a real 1-minute render measured **−12.9 LUFS and +1.1 dBTP**, which clips once
+encoded to MP3), so `hf` normalises to `--lufs` and limits to `--peak` like
+every other generator here. It lands in a normal run folder, so `master`,
+`song`, `check` and the rest work on it unchanged.
+
 ### `lofify` — songs you already have
 
 Takes finished music and rebuilds it as lofi. The moves, in the order they
@@ -565,6 +720,7 @@ near-identical uploads are judged on their own terms regardless of who owns them
 |---|---|
 | `doctor` | check this PC; `--write-env` writes tuned ACE-Step settings |
 | `lofi` | generate tracks with the built-in engine (no GPU) |
+| `hf` | generate with a local Hugging Face model (`--selftest` first) |
 | `lofify` | turn songs you already have into lofi (needs `--i-own-this`) |
 | `generate` | generate tracks with ACE-Step (`--backend comfy` to route via ComfyUI) |
 | `art` | generate cover art in ComfyUI + a seamless video loop |
@@ -608,3 +764,6 @@ Shared on every command that writes audio: `--format {mp3,wav,flac}`,
 | Tags missing from the MP3s | `pip install mutagen` |
 | Lofi version sounds too muddy | lower `--amount`, or raise `--lowpass` |
 | Not sure which model to use | `python pipeline.py models` — it checks your VRAM and flags the non-commercial weights |
+| `hf` output is silence or noise | run `pipeline.py hf --selftest`; if fp16 fails on your card, use `--dtype fp32` |
+| `hf` says it needs PyTorch | `pip install torch --index-url https://download.pytorch.org/whl/cu121` then `pip install transformers` |
+| `hf` is very slow | it is running on the CPU — check `--selftest` reports `device: cuda` |

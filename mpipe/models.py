@@ -78,12 +78,14 @@ CATALOGUE = [
         commercial="no",
         min_vram_gb=4.0,
         max_length="~30s per generation",
-        backends=("generate --backend comfy (needs a workflow)",),
+        backends=("hf", "generate --backend comfy (needs a workflow)"),
         url="https://huggingface.co/facebook/musicgen-small",
         note="Fits a 6 GB card easily and sounds good - and the weights are "
              "NON-COMMERCIAL. A monetised channel is commercial use. The MIT "
              "licence on the code does not carry over to the weights, which is "
-             "the trap. Fine for private or non-monetised work.",
+             "the trap. Fine for private or non-monetised work. Run it with "
+             "`pipeline.py hf` - it is the smallest model here that actually "
+             "makes music.",
     ),
     Model(
         key="stable-audio-open",
